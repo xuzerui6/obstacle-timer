@@ -1,0 +1,28 @@
+{
+  "name": "obstacle-finish-web",
+  "private": true,
+  "version": "0.4.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.0.1",
+    "@tensorflow-models/body-pix": "2.2.1",
+    "@tensorflow/tfjs-backend-wasm": "4.22.0",
+    "@tensorflow/tfjs-backend-webgl": "4.22.0",
+    "@tensorflow/tfjs-converter": "4.22.0",
+    "@tensorflow/tfjs-core": "4.22.0",
+    "mp4box": "2.5.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.3",
+    "vite": "8.3.5"
+  }
+}

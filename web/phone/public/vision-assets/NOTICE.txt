@@ -1,0 +1,3 @@
+BodyPix 2.2.1 / TensorFlow.js 4.22.0. Copyright Google LLC. Apache-2.0.
+https://www.apache.org/licenses/LICENSE-2.0
+Model source: https://storage.googleapis.com/tfjs-models/savedmodel/bodypix/mobilenet/quant2/075/

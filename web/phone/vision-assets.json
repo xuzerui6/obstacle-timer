@@ -1,0 +1,27 @@
+{
+  "bodypix/model-stride8.json": {
+    "url": "https://storage.googleapis.com/tfjs-models/savedmodel/bodypix/mobilenet/quant2/075/model-stride8.json",
+    "sha256": "4ca40fdbae17b32811e6ae43dffd5a177f6dd410f0ddae76ef88a27c4f1200dc",
+    "bytes": 59295
+  },
+  "bodypix/group1-shard1of1.bin": {
+    "url": "https://storage.googleapis.com/tfjs-models/savedmodel/bodypix/mobilenet/quant2/075/group1-shard1of1.bin",
+    "sha256": "e215c9546b9db0e1e06c23c759ed48ccaf2aad68c656d0130b5757bc0479ac77",
+    "bytes": 2598784
+  },
+  "wasm/tfjs-backend-wasm.wasm": {
+    "url": "npm:@tensorflow/tfjs-backend-wasm@4.22.0/tfjs-backend-wasm.wasm",
+    "sha256": "70a5d516060464e5269f01c74bac1772d6b8ab6cb612acf16b5cdaf61f78d892",
+    "bytes": 311123
+  },
+  "wasm/tfjs-backend-wasm-simd.wasm": {
+    "url": "npm:@tensorflow/tfjs-backend-wasm@4.22.0/tfjs-backend-wasm-simd.wasm",
+    "sha256": "77ebb28a6d34f371dbbf2086b7f2de8994acd8ea5a3cf1fa24d2c26c840cac7b",
+    "bytes": 424594
+  },
+  "wasm/tfjs-backend-wasm-threaded-simd.wasm": {
+    "url": "npm:@tensorflow/tfjs-backend-wasm@4.22.0/tfjs-backend-wasm-threaded-simd.wasm",
+    "sha256": "c052228d4bef185c27bbe59a9e029570c78bbb9f08b3cb46b597851650373de2",
+    "bytes": 435643
+  }
+}

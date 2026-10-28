@@ -1,0 +1,6 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {estimateClock} from '../src/clock.mjs';import {webmFrameTimes} from '../src/webm.mjs';
+test('clock uses four timestamps and excludes long network samples',()=>{const samples=Array.from({length:30},(_,i)=>({t1:1e6+i*1000,t2:1005100+i*1000,t3:1005200+i*1000,t4:1000300+i*1000}));const m=estimateClock('s',samples);assert.equal(m.offsetUs,5000);assert.equal(m.rttUs,200);assert.equal(m.samples,30);});
+test('insufficient synchronization cannot be used',()=>assert.throws(()=>estimateClock('s',[])));
+test('truncated WebM is rejected instead of inferring nominal FPS',()=>assert.throws(()=>webmFrameTimes(new Uint8Array([0x1a]).buffer)));
+test('empty WebM has no fabricated frame list',()=>assert.throws(()=>webmFrameTimes(new ArrayBuffer(0))));
+test('WebM index retains variable presentation intervals',()=>{const blocks=[];for(const time of [10,34,87])blocks.push(0xa3,0x85,0x81,time>>8,time&255,0x80,0);const bytes=new Uint8Array([0x18,0x53,0x80,0x67,0xff,0x1f,0x43,0xb6,0x75,0xff,0xe7,0x82,0x03,0xe8,...blocks]);const pts=webmFrameTimes(bytes.buffer);assert.equal(pts.length,3);assert.ok(Math.abs(pts[1]-.024)<1e-9);assert.ok(Math.abs(pts[2]-.077)<1e-9);});

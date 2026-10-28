@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework><OutputType>WinExe</OutputType><UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>ObstacleTimer</AssemblyName><ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.4.1</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ObstacleTimer.Core/ObstacleTimer.Core.csproj"/>
+    <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0"/>
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5"/>
+    <PackageReference Include="QRCoder" Version="1.6.0"/>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="../../web/phone/dist/**/*" Link="phone/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+  </ItemGroup>
+</Project>
