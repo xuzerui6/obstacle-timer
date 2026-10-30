@@ -12,6 +12,7 @@ internal static class CloseReviewTests
   reject(()=>e.CloseHeatForReview(h.Id,h.Version-1,"过期"),"stale close cannot discard intervening judge changes");
   string[] original=h.Finishes.Select(f=>f.Impulse.Raw).ToArray();e.CloseHeatForReview(h.Id,h.Version,"裁判明确结束并保留未处理记录");
   check(h.State==HeatState.Closed&&h.ClosedWithPending&&e.ActiveHeat==null,"DNF group can close with unprocessed records and free the next group");
+  check(h.StopRecordingRequested&&!h.RecordingSaveConfirmed&&!h.EvidenceIncomplete,"pending stop acknowledgment is not falsely labelled as a known incomplete original");
   check(h.Finishes.Count==9&&h.Finishes.All(f=>!f.Ignored&&f.RunId==null)&&h.Finishes.Select(f=>f.Impulse.Raw).SequenceEqual(original),"all 9 unmatched raw impulses survive without being relabelled as mistakes");
   check(r.State==RunState.Dnf&&r.ElapsedUs==null&&h.RecordingStopped&&h.ClosureNote.Contains("9"),"existing DNF remains DNF and closure records pending counts");
   check(e.BindingHistory.Last().Action=="closedWithPending","explicit pending closure has an immutable audit entry");

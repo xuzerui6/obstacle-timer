@@ -21,11 +21,11 @@ public sealed class Store : IDisposable
         {
             version.CommandText = "PRAGMA user_version";
             long current = (long)version.ExecuteScalar()!;
-            if (current > 3) throw new DomainException("数据由更新版本创建，请使用对应版本程序");
-            if (current is 1 or 2)
+            if (current > 4) throw new DomainException("数据由更新版本创建，请使用对应版本程序");
+            if (current is 1 or 2 or 3)
             {
                 using var backup = new SqliteConnection(new SqliteConnectionStringBuilder {
-                    DataSource = Path.Combine(directory, "timing.pre-v3-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-ffff") + ".sqlite") }.ToString());
+                    DataSource = Path.Combine(directory, "timing.pre-v4-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-ffff") + ".sqlite") }.ToString());
                 backup.Open(); db.BackupDatabase(backup);
             }
         }
@@ -41,7 +41,7 @@ public sealed class Store : IDisposable
             CREATE TABLE IF NOT EXISTS device_impulses(id TEXT PRIMARY KEY, json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS binding_history(id TEXT PRIMARY KEY, json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS validation_profiles(id TEXT PRIMARY KEY, json TEXT NOT NULL);
-            PRAGMA user_version=3;
+            PRAGMA user_version=4;
             """;
         cmd.ExecuteNonQuery();
     }

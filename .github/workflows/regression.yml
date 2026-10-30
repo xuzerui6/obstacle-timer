@@ -1,0 +1,61 @@
+name: Windows and phone regression
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      E2E_OUTPUT: ${{ github.workspace }}\artifacts\ci-browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: web/phone/pnpm-lock.yaml
+      - name: Install web dependencies and Chromium
+        run: |
+          pnpm --dir web/phone install --frozen-lockfile
+          pnpm --dir web/phone exec playwright install chromium
+      - name: Verify bundled models and run web unit checks
+        run: ./scripts/build-web.ps1
+      - name: Core, SQLite and HTTP regression (simulation)
+        run: dotnet run --project tests/ObstacleTimer.Tests -c Release
+      - name: Native WPF interaction regression
+        run: dotnet run --project tests/ObstacleTimer.Desktop.Tests -c Release
+      - name: Download pinned public model test photo
+        run: python scripts/fetch-e2e-fixture.py
+      - name: MP4 field flow
+        run: node web/phone/e2e/field-flow.mjs
+      - name: WebM field flow
+        env:
+          FORCE_WEBM: '1'
+        run: node web/phone/e2e/field-flow.mjs
+      - name: Real BodyPix, offline reanalysis, reload and preemption
+        run: node web/phone/e2e/candidate-flow.mjs
+      - name: Portrait capture and legacy IndexedDB migration
+        env:
+          PORTRAIT: '1'
+          SEED_V2: '1'
+          E2E_OUTPUT: ${{ github.workspace }}\artifacts\ci-browser\portrait
+        run: node web/phone/e2e/field-flow.mjs
+      - name: Slow inference and original preservation
+        run: node web/phone/e2e/slow-inference.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: software-regression-screenshots
+          path: artifacts/ci-browser/
+          retention-days: 14

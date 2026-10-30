@@ -86,7 +86,7 @@ Check(browserRun.Revisions.Last().VideoMime == "video/webm", "status change pres
 
 // Actual HTTP/WebSocket, SQLite reload and resumable integrity-checked evidence upload.
 string directory = Path.Combine(Path.GetTempPath(), "ObstacleTimer-tests-" + Wire.Id());
-using var listener = new TcpListener(System.Net.IPAddress.Loopback, 0); listener.Start(); int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+int port=TestPorts.Pair();
 await using (var hub = new TimingHub(directory, port, true))
 {
     await hub.StartAsync();
@@ -155,4 +155,6 @@ await HeatTests.Run(Check, Reject);
 VisionTests.Run(Check, Reject);
 await VisionHttpTests.Run(Check);
 CloseReviewTests.Run(Check,Reject);
+StabilityTests.Run(Check,Reject);
+MigrationV4Tests.Run(Check);
 Console.WriteLine($"\n{passed} checks passed. Test data: {directory}");

@@ -36,6 +36,8 @@ public sealed class Heat
     public TimingImpulse? Start { get; set; }
     public List<FinishEvent> Finishes { get; set; } = [];
     public int Version { get; set; }
+    public bool StopRecordingRequested { get; set; }
+    public bool RecordingSaveConfirmed { get; set; }
     public bool RecordingLive { get; set; }
     // Missing in 0.3.0 JSON: preserve the original group's pre-recording contract.
     public bool RequireRecordingBeforeStart { get; set; } = true;
@@ -133,6 +135,10 @@ public sealed partial class RaceEngine
                 throw new DomainException("已登记的原片信息不能改变");
             return; // A delivery retry acknowledges metadata only; it never revives or refreshes a stopped camera.
         }
+        if(heat.State==HeatState.Closed&&heat.StopRecordingRequested){
+            if(ready.SavedChunks<1||ready.Width<1||ready.Height<1||!double.IsFinite(ready.Fps)||ready.Fps<1||ready.VideoMime is not ("video/mp4" or "video/webm")||string.IsNullOrWhiteSpace(ready.RecordingId)||Heats.Any(h=>h.Id!=heat.Id&&h.RecordingId==ready.RecordingId))throw new DomainException("补登记原片元数据无效");
+            ready.Vision?.Validate();heat.RecordingId=ready.RecordingId;heat.Capture=ready;heat.VideoMime=ready.VideoMime;heat.SavedChunks=ready.SavedChunks;if(ready.Vision!=null)heat.Vision=ready.Vision;heat.Version++;return;
+        }
         SetRecordingReady(ready);
     }
     public void RecordingUpdate(RecordingStatus status, string device)
@@ -140,13 +146,13 @@ public sealed partial class RaceEngine
         var heat = GetHeat(status.HeatId);
         if (heat.DeviceId != device || heat.RecordingId != status.RecordingId) throw new DomainException("录像归属不符");
         if (status.SavedChunks < 1 || status.Note?.Length > 2000) throw new DomainException("录像状态无效");
-        if (heat.RecordingStopped && status.Recording) throw new DomainException("已结束的原片不能重新录像");
+        if (heat.RecordingStopped && status.Recording){if(heat.StopRecordingRequested&&!heat.RecordingSaveConfirmed){heat.SavedChunks=Math.Max(heat.SavedChunks,status.SavedChunks);heat.RecordingHeartbeatUs=clock();return;}throw new DomainException("已结束的原片不能重新录像");}
         if (status.Recording && status.SavedChunks <= heat.SavedChunks) return;
         heat.SavedChunks = status.SavedChunks;
         heat.RecordingLive = status.Recording; heat.RecordingHeartbeatUs = clock();
         if (!status.Recording)
         {
-            heat.RecordingStopped = true;
+            heat.RecordingStopped = true;heat.RecordingSaveConfirmed=true;
             heat.EvidenceIncomplete |= !status.Complete || heat.FinishAuthority == "timy-device" && heat.Start != null && heat.Finishes.Count(f => !f.Ignored) < Members(heat).Count(r => r.State is not (RunState.Dns or RunState.Dnf or RunState.Dsq or RunState.Cancelled));
             if (!string.IsNullOrWhiteSpace(status.Note) && !heat.RecordingNote.Contains(status.Note, StringComparison.Ordinal))
                 heat.RecordingNote += (heat.RecordingNote.Length > 0 ? "；" : "") + status.Note;
@@ -273,6 +279,7 @@ public sealed partial class RaceEngine
     public void SwapFinishes(string heatId, string firstRunId, string secondRunId, int version, string note)
     {
         var h = EditableHeat(heatId, version); RequireNote(note);
+        if(h.State==HeatState.Closed)throw new DomainException("请先重新打开组次再交换");
         var a = Get(firstRunId); var b = Get(secondRunId);
         if (a.Id == b.Id || a.HeatId != h.Id || b.HeatId != h.Id || a.FinishEventId == null || b.FinishEventId == null)
             throw new DomainException("请选择本组两个已匹配的选手");
@@ -295,15 +302,17 @@ public sealed partial class RaceEngine
     private void SetHeatRunStatus(RaceRun run, RunState state, string note)
     {
         RequireNote(note); var h = GetHeat(run.HeatId!);
+        if(run.State==state&&run.FinishEventId==null&&run.VisionEventId==null)return;
         if (h.State == HeatState.Closed && run.State == RunState.Confirmed && state == RunState.Dsq) { }
         else if (h.State == HeatState.Closed) throw new DomainException("请先重新打开组次再改选手状态");
         if (run.FinishEventId != null)
         {
-            var f = FindFinish(h, run.FinishEventId); f.RunId = null; f.Ignored = true; run.FinishEventId = null;
+            var f = FindFinish(h, run.FinishEventId); f.RunId = null; run.FinishEventId = null;
         }
-        run.State = state;
+        if(run.VisionEventId is {} visionId){GetVision(visionId).RunId=null;run.VisionEventId=null;}
+        run.State = state;run.OfficialSource="none";run.SourceReviewRequired=true;
         run.BackupElapsedUs = null;
-        run.Revisions.Add(new ResultRevision(run.Revision + 1, Wire.Id(), state.ToString().ToLowerInvariant(), null, null, null, null, note, DateTimeOffset.UtcNow, "", "timy-device"));
+        run.Revisions.Add(new ResultRevision(run.Revision + 1, Wire.Id(), state.ToString().ToLowerInvariant(), null, null, null, null, note, DateTimeOffset.UtcNow, "", run.TimingMethod));
         h.Version++; Audit(h, "status", note);
     }
     public void RestoreRunner(string heatId, string runId, int version, string note)
@@ -329,8 +338,9 @@ public sealed partial class RaceEngine
             r.Revisions.Add(new ResultRevision(r.Revision+1,Wire.Id(),"pending",null,null,null,r.VisionEventId,"结束组次待复核："+note,DateTimeOffset.UtcNow,"", "group-pending"));
             r.State=RunState.Pending;r.SourceReviewRequired=true;
         }
-        if(!h.RecordingStopped){h.EvidenceIncomplete=true;h.RecordingNote="结束组次时录像未完成核验："+note;}
-        h.RecordingLive=false;h.RecordingStopped=true;h.AcceptingFinishes=false;
+        if(!h.RecordingStopped)h.RecordingNote="已请求停止并保存原片，等待手机确认："+note;
+        h.StopRecordingRequested=true;
+        h.RecordingStopped=true;h.AcceptingFinishes=false;
         h.State=HeatState.Closed;h.ClosedWithPending=true;
         h.ClosureNote=$"{note}；保留待复核：选手{unresolved.Length}，光电事件{h.Finishes.Count(f=>f.RunId==null&&!f.Ignored)}，视频候选{h.VisionEvents.Count(v=>v.RunId==null&&!v.Ignored)}";
         h.Version++;Audit(h,"closedWithPending",h.ClosureNote);
@@ -338,6 +348,7 @@ public sealed partial class RaceEngine
     public void DeclareRecordingLost(string id, int version, string note)
     {
         var h = EditableHeat(id, version); RequireNote(note);
+        h.StopRecordingRequested=true;
         h.RecordingLive = false; h.RecordingStopped = true; h.EvidenceIncomplete = true; h.RecordingNote = note;
         if (h.RequireRecordingBeforeStart && (h.State is HeatState.Ready or HeatState.Armed)) h.State = HeatState.Preparing;
         h.Version++; Audit(h, "recordingLost", note);

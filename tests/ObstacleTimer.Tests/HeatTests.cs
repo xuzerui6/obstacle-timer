@@ -136,14 +136,14 @@ internal static class HeatTests
         string data=Path.Combine(Path.GetTempPath(),"ObstacleHeat-tests-"+Wire.Id());Directory.CreateDirectory(data);
         using(var old=new SqliteConnection("Data Source="+Path.Combine(data,"timing.sqlite")))
         {old.Open();using var c=old.CreateCommand();c.CommandText="PRAGMA user_version=1; CREATE TABLE athletes(id TEXT PRIMARY KEY,json TEXT NOT NULL); CREATE TABLE runs(id TEXT PRIMARY KEY,json TEXT NOT NULL);";c.ExecuteNonQuery();}
-        using var listener=new TcpListener(System.Net.IPAddress.Loopback,0);listener.Start();int port=((System.Net.IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();
+        int port=TestPorts.Pair();
         string heatId,runId,recording="shared-video";long? official;
         await using(var hub=new TimingHub(data,port,true))
         {
-            check(Directory.GetFiles(data,"timing.pre-v3-*.sqlite").Length==1,"SQLite v1 is backed up before v2 migration");
+            check(Directory.GetFiles(data,"timing.pre-v4-*.sqlite").Length==1,"SQLite v1 is backed up before v2 migration");
             await hub.StartAsync();using var http=new HttpClient{BaseAddress=new Uri($"http://127.0.0.1:{port}")};
             var pair=await http.PostAsync("/api/pair",Body(new{secret=hub.PairSecret,deviceId="phone"}));pair.EnsureSuccessStatusCode();var auth=JsonDocument.Parse(await pair.Content.ReadAsStringAsync()).RootElement;
-            check(auth.GetProperty("protocol").GetInt32()==3,"pair advertises v3 protocol");string token=auth.GetProperty("token").GetString()!;http.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Bearer",token);
+            check(auth.GetProperty("protocol").GetInt32()==4,"pair advertises v3 protocol");string token=auth.GetProperty("token").GetString()!;http.DefaultRequestHeaders.Authorization=new AuthenticationHeaderValue("Bearer",token);
             using var ws=new ClientWebSocket();ws.Options.SetRequestHeader("Authorization","Bearer "+token);await ws.ConnectAsync(new Uri($"ws://127.0.0.1:{port}/api/ws"),CancellationToken.None);
             var receive=new byte[65536];await ws.ReceiveAsync(receive,CancellationToken.None);
             var one=hub.AddAthlete("1","甲","");var two=hub.AddAthlete("2","乙","");var h=hub.PrepareHeat([one.Id,two.Id],"双人组",new(10_000,RoundingMode.Cut,true),"timy-device");heatId=h.Id;
@@ -184,7 +184,7 @@ internal static class HeatTests
         }
         await using(var restored=new TimingHub(data,port,true))
         {check(restored.Engine.Get(runId).ElapsedUs==official&&restored.Engine.Get(runId).Reviews.Count==1&&restored.Engine.GetHeat(heatId).State==HeatState.Closed,"SQLite reload retains shared recording, device scores and independent reviews");
-         check(Directory.GetFiles(data,"timing.pre-v3-*.sqlite").Length==1,"v2 reopen does not repeat v1 migration backup");}
+         check(Directory.GetFiles(data,"timing.pre-v4-*.sqlite").Length==1,"v2 reopen does not repeat v1 migration backup");}
     }
     private static StringContent Body(object value)=>new(JsonSerializer.Serialize(value,Wire.Json),Encoding.UTF8,"application/json");
 }

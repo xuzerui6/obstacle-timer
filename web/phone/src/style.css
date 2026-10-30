@@ -8,3 +8,5 @@
 .detection-region{position:absolute;border:1px dashed #c0f06988;pointer-events:none}
 
 .vision-settings{padding:14px;background:#17232c;border-radius:10px;margin:12px 0}.vision-settings label{display:block;margin-top:12px}.vision-settings input[type=checkbox]{width:auto}.group-list div{gap:16px}.group-list div span{overflow-wrap:anywhere;min-width:0}.group-list strong{white-space:nowrap}
+
+.offline-controls,.offline-progress{background:#14202b;border:1px solid #314552;border-radius:8px;padding:12px;margin:12px 0;font-size:14px}.offline-controls label{display:grid;grid-template-columns:70px 1fr;gap:8px;margin:10px 0;align-items:center}.offline-controls input{width:100%;min-width:0;background:#0b141c;color:#eff6f8;padding:8px;border:1px solid #547080}.offline-controls button,.offline-progress button,.model-retry{padding:8px 12px;min-height:40px;font-size:13px}.model-retry{margin-top:8px}.offline-controls p,.offline-progress p{line-height:1.6;overflow-wrap:anywhere}

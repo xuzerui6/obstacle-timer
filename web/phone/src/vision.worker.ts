@@ -2,8 +2,9 @@ import * as tf from '@tensorflow/tfjs-core';
 import {setWasmPaths} from '@tensorflow/tfjs-backend-wasm';
 import * as bodyPix from '@tensorflow-models/body-pix';
 import {TorsoTracker,torsoPixels} from './torso.mjs';
+import {MODEL} from './protocol';
 let model:bodyPix.BodyPix|undefined,tracker:TorsoTracker;
-const MODEL='bodypix-2.2.1-m075-s8-q2-torso-v1';
+let session='';
 let pending=Promise.resolve();
 self.onmessage=({data})=>{pending=pending.then(()=>handle(data));};
 async function handle(data:any){
@@ -12,19 +13,19 @@ async function handle(data:any){
    setWasmPaths('/phone/vision-assets/wasm/');await tf.setBackend('wasm');await tf.ready();
    installIntegerMatMul();
    model=await bodyPix.load({architecture:'MobileNetV1',outputStride:8,multiplier:.75,quantBytes:2,modelUrl:'/phone/vision-assets/bodypix/model-stride8.json'});
-   self.postMessage({type:'ready',model:MODEL,backend:tf.getBackend()});return;
+   self.postMessage({type:'ready',model:MODEL,backend:tf.getBackend(),requestId:data.requestId,sessionId:data.sessionId});return;
   }
-  if(data.type==='reset'){tracker=new TorsoTracker(data.settings);return;}
+  if(data.type==='reset'){tracker=new TorsoTracker(data.settings);session=data.sessionId;self.postMessage({type:'reset',requestId:data.requestId,sessionId:session});return;}
   if(data.type==='frame'){
-   if(!model||!tracker)throw new Error('模型尚未就绪');
+   if(!model||!tracker||data.sessionId!==session)throw new Error('模型未就绪或分析会话已变化');
    const {frame}=data;
    // Tensor input avoids browser DOM access inside Worker.
    const tensor=tf.tensor3d(new Int32Array(frame.width*frame.height*3).map((_,i)=>frame.pixels[Math.floor(i/3)*4+i%3]),[frame.height,frame.width,3],'int32');
    let parts;try{parts=await model.segmentMultiPersonParts(tensor,{internalResolution:'medium',segmentationThreshold:.7,maxDetections:12,scoreThreshold:.5,nmsRadius:20,refineSteps:10});}finally{tensor.dispose();}
    const people=parts.map(p=>({...torsoPixels(p.data,p.width,p.height),confidence:p.pose.score}));
-   const events=tracker.update(people,frame);self.postMessage({type:'analyzed',events,people:people.length,torsoPixels:people.reduce((sum,p)=>sum+p.points.length,0)});
+   const events=tracker.update(people,frame);self.postMessage({type:'analyzed',events,people:people.length,torsoPixels:people.reduce((sum,p)=>sum+p.points.length,0),requestId:data.requestId,sessionId:data.sessionId});
   }
- }catch(error){self.postMessage({type:'error',message:(error as Error).message});}
+ }catch(error){self.postMessage({type:'error',message:(error as Error).message,requestId:data.requestId,sessionId:data.sessionId});}
 };
 function installIntegerMatMul(){
  // BodyPix's part decoder multiplies an int32 one-hot matrix by part IDs 0..23.

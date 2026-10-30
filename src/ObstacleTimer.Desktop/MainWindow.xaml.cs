@@ -4,6 +4,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
 using ObstacleTimer.Core;
@@ -21,7 +22,7 @@ public partial class MainWindow : Window
     private Heat? Current => heats.FirstOrDefault(h => h.Id == selectedHeat);
     public MainWindow(TimingHub hub)
     {
-        this.hub = hub; InitializeComponent();
+        this.hub = hub; InitializeComponent();Title="障碍竞速 · "+Wire.AppVersion;
         PrecisionList.ItemsSource = new[] { new PrecisionChoice("0.01 秒", 10_000), new PrecisionChoice("0.001 秒", 1000), new PrecisionChoice("0.0001 秒", 100), new PrecisionChoice("0.1 秒", 100_000), new PrecisionChoice("1 秒", 1_000_000) };
         PrecisionList.SelectedIndex = 0; RoundingList.ItemsSource = Enum.GetValues<RoundingMode>(); RoundingList.SelectedIndex = 0;
         AddressList.ItemsSource = TimingHub.Addresses().Append("127.0.0.1").ToArray(); AddressList.SelectedIndex = 0;
@@ -42,7 +43,7 @@ public partial class MainWindow : Window
                 var marked = picks.Where(p => p.Selected).Select(p => p.Athlete.Id).ToHashSet();
                 picks = athletes.Select(a => new AthletePick(a) { Selected = marked.Contains(a.Id) }).ToList(); AthleteGrid.ItemsSource = picks;
             }
-            selectedHeat ??= heats.LastOrDefault()?.Id; HeatList.ItemsSource = heats; HeatList.SelectedItem = Current; VisionHeatList.ItemsSource=heats;VisionHeatList.SelectedItem=Current;
+            selectedHeat ??= heats.LastOrDefault()?.Id; UpdateHeatList(HeatList);UpdateHeatList(VisionHeatList);
             bool online = snapshot.GetProperty("timyOnline").GetBoolean(), phone = snapshot.GetProperty("phoneOnline").ValueKind != JsonValueKind.Null;
             ConnectionLabel.Text = $"Timy3 {(online ? "● 已连接" : "○ 未连接")}     终点手机 {(phone ? "● 在线" : "○ 未连接")}";
             UsbStatus.Text = online ? "Timy3 USB · 已连接" : "Timy3 USB · 等待连接"; RawLine.Text = hub.LastDeviceLine;
@@ -51,38 +52,75 @@ public partial class MainWindow : Window
             RunStatus.Text = h == null ? "先连接手机；核对 Timy3 精度及舍入后创建组次" :
                 $"起跑：{(h.Start == null ? "等待 START" : TimeOfDay(h.Start.DeviceTimeUs) + " [设备号" + h.Start.DeviceNumber + "]")} · 待匹配 {h.Finishes.Count(f => !f.Ignored && f.RunId == null)} · {h.Profile.UnitUs / 1_000_000m} 秒 / {h.Profile.Rounding.ToString().ToUpperInvariant()}" +
                 (h.ClosedWithPending ? " · 已结束，未处理记录保留待复核" : "") + (h.EvidenceIncomplete ? " · 录像证据不完整" : "") + (h.Warning.Length > 0 ? "\n" + h.Warning : "");
-            if (h != null) RunStatus.Text += " · 相机：" + (h.RecordingStopped ? "已结束/缺失已记录" : h.RecordingId.Length == 0 ? "未开启（可先发令）" : h.RecordingLive ? "录像中" : "离线/状态未知");
+            if (h != null) RunStatus.Text += " · 相机：" + (h.StopRecordingRequested&&!h.RecordingSaveConfirmed ? "已请求停止，等待手机保存确认" : h.RecordingStopped ? "已结束/缺失已记录" : h.RecordingId.Length == 0 ? "未开启（可先发令）" : h.RecordingLive ? "录像中" : "离线/状态未知");
             ArmButton.IsEnabled = h != null && (h.State is HeatState.Preparing or HeatState.Ready) && online && (!h.RequireRecordingBeforeStart || h.RecordingLive && phone);
             ArmButton.Content = h?.RequireRecordingBeforeStart == true ? "旧组：录像就绪 → 待发令" : "进入待发令（无需先录像）";
             QualityLabel.Text = hub.Simulation ? "模拟模式 · 模拟数据不进入排名" : "视频候选不受精度配置限制 · 达标配置只控制成绩自动确认 · 光电门备份须裁判确认";
             var members = h == null ? [] : runs.Where(r => r.HeatId == h.Id).ToArray();
             var selectedMembers = MemberGrid.SelectedItems.Cast<ResultRow>().Select(r => r.Id).ToHashSet();
-            var memberRows = Rows(members); MemberGrid.ItemsSource = memberRows;
-            foreach (var row in memberRows.Where(r => selectedMembers.Contains(r.Id))) MemberGrid.SelectedItems.Add(row);
+            var memberRows = Rows(members); var memberChanged=UpdateRows(MemberGrid,memberRows);
+            if(memberChanged)foreach (var row in memberRows.Where(r => selectedMembers.Contains(r.Id))) MemberGrid.SelectedItems.Add(row);
             string? selectedEvent = (FinishGrid.SelectedItem as FinishRow)?.Id;
             var finishes = h?.Finishes.Select((f, i) => new FinishRow(f.Id, i + 1, TimeOfDay(f.Impulse.DeviceTimeUs),
                 f.Ignored ? "误按（已保留）" : f.RunId != null ? "→ " + runs.First(r => r.Id == f.RunId).Athlete.Bib :
                 f.ReviewNote.Length > 0 ? "已核验 · 待匹配" : f.Issue.Length > 0 ? f.Issue : h.Start != null && f.Impulse.DeviceTimeUs < h.Start.DeviceTimeUs ? "待核验跨午夜/回拨" : "待匹配")).ToArray() ?? [];
-            FinishGrid.ItemsSource = finishes; FinishGrid.SelectedItem = finishes.FirstOrDefault(f => f.Id == selectedEvent) ?? finishes.FirstOrDefault(f => h!.Finishes.First(x => x.Id == f.Id).RunId == null && !h.Finishes.First(x => x.Id == f.Id).Ignored);
-            GroupResults.ItemsSource = memberRows.OrderBy(r => r.SortUs).ToArray();
-            string? chosenRun=(VisionRunner.SelectedItem as ResultRow)?.Id;VisionRunner.ItemsSource=memberRows;VisionRunner.SelectedItem=memberRows.FirstOrDefault(r=>r.Id==chosenRun)??memberRows.FirstOrDefault();
+            if(UpdateRows(FinishGrid,finishes))FinishGrid.SelectedItem = finishes.FirstOrDefault(f => f.Id == selectedEvent) ?? finishes.FirstOrDefault(f => h!.Finishes.First(x => x.Id == f.Id).RunId == null && !h.Finishes.First(x => x.Id == f.Id).Ignored);
+            UpdateRows(GroupResults,memberRows.OrderBy(r=>r.SortUs).ToArray());
+            string? chosenRun=(VisionRunner.SelectedItem as ResultRow)?.Id;if(UpdateRows(VisionRunner,memberRows))VisionRunner.SelectedItem=memberRows.FirstOrDefault(r=>r.Id==chosenRun)??memberRows.FirstOrDefault();
             string? chosenVision=(VisionGrid.SelectedItem as VisionRow)?.Id;
             var visionRows=h?.VisionEvents.Select(v=>new VisionRow(v.Id,v.Submission.TrackId.Split('-').Last(),v.RunId==null?"待匹配":runs.First(r=>r.Id==v.RunId).Athlete.Bib,
-                v.EstimatedElapsedUs.HasValue?(v.EstimatedElapsedUs.Value/1_000_000m).ToString("F4"):"—",v.Ignored?"已忽略":v.Eligible?"已通过核验":string.Join("；",v.Reasons),v.Revision)).ToArray()??[];
-            VisionGrid.ItemsSource=visionRows;VisionGrid.SelectedItem=visionRows.FirstOrDefault(v=>v.Id==chosenVision)??visionRows.FirstOrDefault();
+                v.EstimatedElapsedUs.HasValue?(v.EstimatedElapsedUs.Value/1_000_000m).ToString("F4"):"—",v.Ignored?"已忽略":v.Eligible?"已通过核验":(v.Submission.Origin=="live"?"实时候选 · ":"原片/人工候选 · ")+string.Join("；",v.Reasons),v.Revision)).ToArray()??[];
+            if(UpdateRows(VisionGrid,visionRows))VisionGrid.SelectedItem=visionRows.FirstOrDefault(v=>v.Id==chosenVision)??visionRows.FirstOrDefault();
             var diagnostic=snapshot.GetProperty("visionDiagnostics").Deserialize<List<VisionDiagnostic>>(Wire.Json)?.FirstOrDefault(d=>d.HeatId==h?.Id);
-            VisionPipelineStatus.Text=h==null?"尚无组次，请配对手机并创建组次":$"{h.Name} · {(h.ClosedWithPending?"已结束，保留待复核":HeatNameOf(h.State))} · {(h.RecordingStopped?"相机已停止":h.RecordingId.Length==0?"尚未开启录像":h.RecordingLive?"整组录像中":"相机离线/状态未知")} · 电脑已收候选 {visionRows.Length}";
+            VisionPipelineStatus.Text=h==null?"尚无组次，请配对手机并创建组次":$"{h.Name} · {(h.ClosedWithPending?"已结束，保留待复核":HeatNameOf(h.State))} · {(h.StopRecordingRequested&&!h.RecordingSaveConfirmed?"已请求停录，等待保存确认":h.RecordingStopped?"相机已停止":h.RecordingId.Length==0?"尚未开启录像":h.RecordingLive?"整组录像中":"相机离线/状态未知")} · 电脑已收候选 {visionRows.Length}";
             if(diagnostic!=null)VisionPipelineStatus.Text+=$"\n{diagnostic.Status} · 采集 {diagnostic.Captured} 帧 / 分析 {diagnostic.Analyzed} 帧 · 可见目标 {diagnostic.People} / 躯干像素 {diagnostic.TorsoPixels} · 本机候选 {diagnostic.Generated} / 已保存 {diagnostic.Saved} · 排队 {diagnostic.Queued}"+(diagnostic.LastError.Length>0?"\n检测错误："+diagnostic.LastError:"");
             VisionEmptyState.Visibility=visionRows.Length==0?Visibility.Visible:Visibility.Collapsed;
             VisionEmptyState.Text=h?.FinishAuthority=="timy-device"?"这是旧版设备计时组，本组没有视频检测记录。请新建视频主计时组。":h?.RecordingId.Length==0?"还未开始录像。手机点击开启相机并录像后，人员躯干按设置方向通过参考线才会产生候选。":diagnostic?.LastError.Length>0?"手机检测已报错，原片保留。请刷新手机网页使用修复版；尚无达标配置不会阻止候选显示。":h?.RecordingStopped==true?"本组录像已停止，电脑未收到过线候选。原片仍保留在手机；可恢复录像逐帧复核，未处理记录可随本组结束保留待核验。":"尚未收到过线候选。请确认手机显示检测中、参考线及方向正确。没有实测配置只影响自动确认，不会隐藏候选。";
-            BindVisionButton.IsEnabled=visionRows.Length>0&&h?.State!=HeatState.Closed;UndoVisionButton.IsEnabled=visionRows.Length>0;IgnoreVisionButton.IsEnabled=visionRows.Length>0;ExportDraftButton.IsEnabled=visionRows.Length>0;
+            ExportDraftButton.IsEnabled=visionRows.Length>0;
             int profiles=snapshot.GetProperty("validationProfiles").GetArrayLength();
             ValidationLabel.Text=$"本机 USB 配置标识：{snapshot.GetProperty("rigFingerprint").GetString()}\n已审核配置：{profiles}。完整配置≥100次、最大绝对误差≤10ms；每个事件仍需同步、帧对应、画面和证据核验。";
             string? selectedResult = (ResultsGrid.SelectedItem as ResultRow)?.Id;
-            var all = Rows(runs); ResultsGrid.ItemsSource = all; ResultsGrid.SelectedItem = all.FirstOrDefault(r => r.Id == selectedResult);
+            var all = Rows(runs); if(UpdateRows(ResultsGrid,all))ResultsGrid.SelectedItem = all.FirstOrDefault(r => r.Id == selectedResult);
+            UpdateActionButtons();VisionSelected(this,new SelectionChangedEventArgs(Selector.SelectionChangedEvent,Array.Empty<object>(),Array.Empty<object>()));
             if (hub.LastError.Length > 0) MessageLabel.Text = hub.LastError;
         }
         finally { refreshing = false; }
+    }
+    private static bool UpdateRows<T>(ItemsControl control,T[] rows){
+        if(control.ItemsSource is IEnumerable<T> current&&current.SequenceEqual(rows))return false;
+        control.ItemsSource=rows;return true;
+    }
+    private void ActionSelectionChanged(object sender,SelectionChangedEventArgs e){if(!refreshing)UpdateActionButtons();}
+    private void UpdateActionButtons(){
+        if(UseCameraButton==null)return;
+        var h=Current;bool editable=h!=null&&h.State!=HeatState.Closed;
+        var member=runs.FirstOrDefault(r=>r.Id==(MemberGrid.SelectedItem as ResultRow)?.Id);
+        var runner=runs.FirstOrDefault(r=>r.Id==(VisionRunner.SelectedItem as ResultRow)?.Id);
+        var finish=h?.Finishes.FirstOrDefault(f=>f.Id==(FinishGrid.SelectedItem as FinishRow)?.Id);
+        var visual=h?.VisionEvents.FirstOrDefault(v=>v.Id==(VisionGrid.SelectedItem as VisionRow)?.Id);
+        bool available=runner!=null&&runner.State is not (RunState.Dns or RunState.Dnf or RunState.Dsq or RunState.Cancelled);
+        PrepareButton.IsEnabled=hub.Engine.ActiveHeat==null;
+        CloseGroupButton.IsEnabled=CloseGroupButton2.IsEnabled=editable;
+        CancelGroupButton.IsEnabled=editable&&h!.Start==null;
+        BindVisionButton.IsEnabled=editable&&available&&visual is {Ignored:false,RunId:null}&&runner!.VisionEventId==null;
+        UndoVisionButton.IsEnabled=editable&&visual?.RunId!=null;
+        IgnoreVisionButton.IsEnabled=editable&&visual is {Ignored:false};
+        UseBackupButton.IsEnabled=editable&&available&&runner!.BackupElapsedUs.HasValue;
+        UseCameraButton.IsEnabled=editable&&available&&runner!.VisionEventId is {} id&&h!.VisionEvents.Any(v=>v.Id==id&&v.Eligible);
+        AssignFinishButton.IsEnabled=editable&&finish is {Ignored:false,RunId:null}&&member!=null&&member.FinishEventId==null&&member.State is not (RunState.Dns or RunState.Dnf or RunState.Dsq or RunState.Cancelled);
+        UndoFinishButton.IsEnabled=editable&&finish?.RunId!=null;
+        IgnoreFinishButton.IsEnabled=editable&&finish is {RunId:null};
+        ReviewFinishButton.IsEnabled=editable&&finish is {RunId:null,Ignored:false};
+        DnsButton.IsEnabled=DnfButton.IsEnabled=editable&&member!=null;
+        DsqButton.IsEnabled=member!=null&&(editable||member.State==RunState.Confirmed);
+        RestoreButton.IsEnabled=editable&&member!=null&&member.State is RunState.Dns or RunState.Dnf or RunState.Dsq or RunState.Cancelled;
+        SwapButton.IsEnabled=editable&&MemberGrid.SelectedItems.Count==2;
+        ReopenButton.IsEnabled=h?.State==HeatState.Closed&&hub.Engine.ActiveHeat==null;
+        RecordingLostButton.IsEnabled=editable;
+    }
+    private void UpdateHeatList(ComboBox box){
+        if(!box.Items.OfType<Heat>().Select(h=>(h.Id,h.Name)).SequenceEqual(heats.Select(h=>(h.Id,h.Name))))box.ItemsSource=heats;
+        var target=box.Items.OfType<Heat>().FirstOrDefault(h=>h.Id==selectedHeat);if(!ReferenceEquals(box.SelectedItem,target))box.SelectedItem=target;
     }
     private ResultRow[] Rows(IEnumerable<RaceRun> source)
     {
@@ -101,7 +139,7 @@ public partial class MainWindow : Window
     private VisionEvent? VisionOf(RaceRun r)=>heats.SelectMany(h=>h.VisionEvents).FirstOrDefault(v=>v.Id==r.VisionEventId);
     private string VideoTime(RaceRun r)=>VisionOf(r)?.EstimatedElapsedUs is long us?(us/1_000_000m).ToString("F4"):"—";
     private string DeltaTime(RaceRun r)=>VisionOf(r)?.EstimatedElapsedUs is long us&&r.BackupElapsedUs is long b?((us-b)/1_000_000m).ToString("+0.0000;-0.0000;0.0000"):"—";
-    private void VisionSelected(object s,SelectionChangedEventArgs e){var v=Current?.VisionEvents.FirstOrDefault(v=>v.Id==(VisionGrid.SelectedItem as VisionRow)?.Id);VisionDetails.Text=v==null?"":$"事件 {v.Id} · 帧时钟 {v.Submission.Clock.Source} · 证据完整={v.EvidenceReceived} · 原片对应={v.Correspondence!=null} · {string.Join("；",v.Reasons)}";}
+    private void VisionSelected(object s,SelectionChangedEventArgs e){var v=Current?.VisionEvents.FirstOrDefault(v=>v.Id==(VisionGrid.SelectedItem as VisionRow)?.Id);VisionDetails.Text=v==null?"":$"事件 {v.Id} · 帧时钟 {v.Submission.Clock?.Source??"无采集时钟"} · 截图/掩膜接收={v.EvidenceReceived} · 原片接收={v.OriginalReceived} · 帧核验={v.FileVerificationState} · {v.VerificationNote} · {string.Join("；",v.Reasons)}";if(!refreshing)UpdateActionButtons();}
     private string ChosenVision()=>(VisionGrid.SelectedItem as VisionRow)?.Id??throw new DomainException("请选择视频候选");
     private string ChosenRunner()=>(VisionRunner.SelectedItem as ResultRow)?.Id??throw new DomainException("请选择选手号码");
     private void BindVision(object s,RoutedEventArgs e)=>Act(()=>{var h=RequireHeat();hub.AssignVision(h.Id,ChosenVision(),ChosenRunner(),h.Version,VisionNote.Text);});
@@ -113,7 +151,7 @@ public partial class MainWindow : Window
     private void ExportValidationDraft(object s,RoutedEventArgs e)=>Act(()=>{
         var v=RequireHeat().VisionEvents.Single(x=>x.Id==ChosenVision());
         var draft=new CameraValidationProfile{RigFingerprint=hub.Engine.RigFingerprint,CaptureFingerprint=v.Submission.CaptureFingerprint,
-            ModelVersion=v.Submission.ModelVersion,ClockSource=v.Submission.Clock.Source,SettingsJson=JsonSerializer.Serialize(v.Submission.Settings,Wire.Json),
+            ModelVersion=v.Submission.ModelVersion,ClockSource=v.Submission.Clock?.Source??"无采集时钟",SettingsJson=JsonSerializer.Serialize(v.Submission.Settings,Wire.Json),
             ReferenceDescription="待填写独立参考测量方法；本草稿未经验证，不能启用自动确认"};
         var dialog=new SaveFileDialog{Filter="配置草稿 JSON|*.json",FileName="camera-validation-DRAFT.json"};
         if(dialog.ShowDialog()==true)File.WriteAllText(dialog.FileName,JsonSerializer.Serialize(draft,new JsonSerializerOptions(Wire.Json){WriteIndented=true}));

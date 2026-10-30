@@ -8,6 +8,8 @@ namespace ObstacleTimer.Core;
 
 public static class Wire
 {
+    public const int Protocol = 4;
+    public const string AppVersion = "0.5.0";
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }

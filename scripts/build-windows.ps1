@@ -1,4 +1,4 @@
-param([string]$Dotnet, [switch]$SkipTests, [switch]$FrameworkDependent, [switch]$SkipWeb)
+param([string]$Dotnet, [switch]$SkipTests, [switch]$FrameworkDependent, [switch]$SkipWeb, [string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path $PSScriptRoot -Parent
 if(!$Dotnet) {
@@ -15,7 +15,9 @@ try {
   & $Dotnet run --project 'tests\ObstacleTimer.Tests\ObstacleTimer.Tests.csproj' -c Release
   if($LASTEXITCODE -ne 0) { throw 'Tests failed' }
  }
- $taskPublish = Join-Path $taskRoot 'artifacts\windows'
+ $taskPublish = if($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $taskRoot 'artifacts\windows-0.5.0' }
+ $taskRunning = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($taskPublish+'\',[StringComparison]::OrdinalIgnoreCase) }
+ if($taskRunning) { throw 'The target release is running. Close it when the competition and recording are idle before updating.' }
  $taskSelfContained = if($FrameworkDependent) {'false'} else {'true'}
  & $Dotnet publish 'src\ObstacleTimer.Desktop\ObstacleTimer.Desktop.csproj' -c Release -r win-x64 --self-contained $taskSelfContained -o $taskPublish -p:PublishSingleFile=false
  if($LASTEXITCODE -ne 0) { throw 'Desktop publish failed' }
@@ -26,6 +28,6 @@ try {
  Copy-Item -LiteralPath 'README.md','docs\操作指南.md' -Destination $taskPublish -Force
  Copy-Item -LiteralPath 'docs' -Destination $taskPublish -Recurse -Force
  $taskInno = Join-Path $taskRoot '.tools\inno\ISCC.exe'
- if(Test-Path -LiteralPath $taskInno) { & $taskInno 'scripts\installer.iss'; if($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' } }
+ if(Test-Path -LiteralPath $taskInno) { & $taskInno "/DAppSource=$taskPublish" 'scripts\installer.iss'; if($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' } }
  Write-Host "Windows app: $taskPublish\ObstacleTimer.exe"
 } finally { Pop-Location }

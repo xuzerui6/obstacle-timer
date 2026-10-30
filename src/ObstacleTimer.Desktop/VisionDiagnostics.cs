@@ -3,7 +3,7 @@ using ObstacleTimer.Core;
 namespace ObstacleTimer.Desktop;
 
 public record VisionDiagnostic(string HeatId,string RecordingId,string Status,int Captured,int Analyzed,int People,int TorsoPixels,
-    int Queued,int Generated,int Saved,string LastError,long UpdatedHostUs=0);
+    int Queued,int Generated,int Saved,string LastError,long UpdatedHostUs=0,string Stage="legacy",string AnalysisSessionId="");
 public sealed partial class TimingHub
 {
     private readonly Dictionary<string,VisionDiagnostic> visionDiagnostics=[];

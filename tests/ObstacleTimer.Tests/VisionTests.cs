@@ -13,14 +13,14 @@ internal static class VisionTests
         var settings=new VisionSettings(FixedSide:true);
         e.RegisterRecording(new(h.Id,"video","phone","video/webm",120,1280,720,1,"test","capture",settings));
         var samples=Enumerable.Range(0,30).Select(i=>new SignedSyncSample("s"+i,frame-100000-i*10000,frame-99500-i*10000,frame-99500-i*10000,frame-99000-i*10000,"test-proof")).ToArray();
-        var submission=new VisionSubmission("request","visual",h.Id,"video","phone","track","bodypix-2.2.1-m075-s8-q2-torso-v1","capture",settings,
-            new("vision-session","page","map","rvfc-captureTime",200000,frame,frame+900000,samples),191667,208333,8333,.95,false,[],[new('0',64),new('1',64),new('2',64)]);
+        var submission=new VisionSubmission("request","visual",h.Id,"video","phone","track",RaceEngine.VisionModelVersion,"capture",settings,
+            new("vision-session","page","map","rvfc-captureTime",200000,frame,frame+900000,samples),191667,208333,8333,.95,false,[],[new('0',64),new('1',64),new('2',64)],new FrameGeometry(320,180));
         var v=e.SubmitVision(submission,true);var r=e.Members(h).First();
         e.AssignVision(h.Id,v.Id,r.Id,h.Version,"号码核对");
         check(v.EstimatedElapsedUs==2000000&&r.ElapsedUs==null&&r.State==RunState.Pending,"vision uses pixel-bound frame clock, never inference completion or recorder start");
         check(!v.Eligible&&v.Reasons.Any(s=>s.Contains("100次")),"no measured profile means automatic video confirmation stays off");
         check(ReferenceEquals(v,e.SubmitVision(submission,true)),"visual event retry is idempotent");
-        reject(()=>e.SubmitVision(submission with{Clock=submission.Clock with{ClientUs=frame+1}},true),"visual retry cannot change its timestamp");
+        reject(()=>e.SubmitVision(submission with{Clock=submission.Clock! with{ClientUs=frame+1}},true),"visual retry cannot change its timestamp");
         reject(()=>e.SubmitVision(submission with{RequestId="other",EventId="other"},true),"same trajectory cannot create two finishes");
         reject(()=>e.SelectOfficialSource(h.Id,r.Id,h.Version,"photocell-backup","原因"),"video failure never fabricates a missing photocell backup");
         e.OnImpulse(TimyParser.Parse("0002 C1M 12:00:01.97 00","timy","usb",frame+5000000)!);
@@ -52,7 +52,7 @@ internal static class VisionTests
         v.ManualFramePtsUs=null;e.SetVisionEvidence(v.Id,false);check(!v.Eligible,"missing evidence disables camera confirmation");
         e.SetVisionEvidence(v.Id,true);check(r.State==RunState.Confirmed&&r.ElapsedUs==2000200,"valid complete video can confirm without adopting optical finish time");
         // A second athlete has no optical finish at all.
-        var s2=submission with{RequestId="request2",EventId="visual2",TrackId="track2",Clock=submission.Clock with{ClientUs=frame+1000}};
+        var s2=submission with{RequestId="request2",EventId="visual2",TrackId="track2",Clock=submission.Clock! with{ClientUs=frame+1000}};
         var v2=e.SubmitVision(s2,true);var r2=e.Members(h).Last();e.AssignVision(h.Id,v2.Id,r2.Id,h.Version,"第二人");
         e.SetVisionEvidence(v2.Id,true);e.SetFrameCorrespondence(proof with{RequestId="proof2",EventId=v2.Id},new('a',64));
         check(r2.State==RunState.Confirmed&&r2.ElapsedUs==2001200&&r2.FinishEventId==null,"validated video can independently confirm an athlete without any C1 event");

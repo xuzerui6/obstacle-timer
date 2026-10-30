@@ -3,8 +3,11 @@
 export class TorsoTracker {
  constructor(settings){this.settings=settings;this.tracks=[];this.next=0;}
  update(people,frame){
+  // Emitted identities are latched only while the same trajectory remains visible.
+  // Retire lost tracks, including their pixel buffers, before associating a new entrant.
+  this.tracks=this.tracks.filter(t=>frame.mediaUs>=t.last.mediaUs&&frame.mediaUs-t.last.mediaUs<=750000);
   const s=this.settings,events=[],used=new Set();
-  const detections=people.filter(p=>p.points.length>=24).map(p=>{
+  const detections=people.map((p,personIndex)=>({...p,personIndex})).filter(p=>p.points.length>=24).map(p=>{
    // Mobile JS engines have small argument limits. A close-up portrait torso can
    // contain >100k pixels; Math.min(...pixels) would terminate every detection.
    let count=0,left=1,right=0,top=1,bottom=0;
@@ -12,11 +15,16 @@ export class TorsoTracker {
     count++;left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);}
    if(count<24)return null;
    return {x:(left+right)/2,y:(top+bottom)/2,
-    edge:s.direction===1?right:left,confidence:p.confidence,mask:p.mask};
+    edge:s.direction===1?right:left,confidence:p.confidence,mask:p.mask,personIndex:p.personIndex};
   }).filter(Boolean);
   for(const d of detections){
-   const candidates=this.tracks.filter(t=>(frame.mediaUs-t.last.mediaUs<750000||t.emitted)&&Math.hypot(t.x-d.x,t.y-d.y)<.22);
-   const conflicted=candidates.length>1||detections.some(other=>other!==d&&Math.hypot(other.x-d.x,other.y-d.y)<.18);
+   const nearby=this.tracks.filter(t=>Math.hypot(t.x-d.x,t.y-d.y)<.22);
+   // A completed runner cannot absorb a new approach from behind the plane.
+   // A large reverse jump can also be a returning runner: retain a candidate,
+   // but keep that identity ambiguity for the judge.
+   let candidates=nearby.filter(t=>!t.emitted||!((d.edge-s.lineX)*s.direction<-.04&&(d.edge-t.edge)*s.direction<-.08));
+   const approaching=candidates.filter(t=>!t.emitted);if(approaching.length)candidates=approaching;
+   const conflicted=nearby.length>1||nearby.length>candidates.length||detections.some(other=>other!==d&&Math.hypot(other.x-d.x,other.y-d.y)<.18);
    let t=candidates.length===1?candidates[0]:undefined;
    if(t&&used.has(t.id)){t.ambiguous=true;continue;}
    if(!t){t={id:String(++this.next),x:d.x,y:d.y,last:frame,history:[],ambiguous:conflicted,emitted:false};this.tracks.push(t);}
@@ -24,7 +32,7 @@ export class TorsoTracker {
    if(Math.hypot(d.x-t.x,d.y-t.y)>.15)t.ambiguous=true;
    const side=(d.edge-s.lineX)*s.direction,previous=t.history.at(-1);
    if(!t.emitted&&previous&&previous.side<0&&side>=0){
-    t.cross={before:previous.frame,frame,mask:d.mask,confidence:Math.min(d.confidence,previous.confidence),gap:frame.mediaUs-previous.frame.mediaUs};
+    t.cross={before:previous.frame,frame,mask:d.mask,personIndex:d.personIndex,confidence:Math.min(d.confidence,previous.confidence),gap:frame.mediaUs-previous.frame.mediaUs};
    }
    if(t.cross&&frame.mediaUs>t.cross.frame.mediaUs){
     // One more observed frame must remain across the plane. Reverse/lingering is pending.
@@ -32,14 +40,11 @@ export class TorsoTracker {
     const issues=[];if(side<0)issues.push('过线后回退，需逐帧复核');
     if(cross.gap>100000||frame.mediaUs-cross.frame.mediaUs>100000)issues.push('关键分析帧间隔过大');
     if(t.ambiguous)issues.push('多人接近或轨迹关联不唯一');
-    events.push({trackId:t.id,before:cross.before,frame:cross.frame,after:frame,mask:cross.mask,
+    events.push({trackId:t.id,personIndex:cross.personIndex,before:cross.before,frame:cross.frame,after:frame,mask:cross.mask,
      confidence:cross.confidence,ambiguous:t.ambiguous,issues,maxFrameGapUs:Math.max(cross.gap,frame.mediaUs-cross.frame.mediaUs)});
    }
-   if(t.emitted){t.history=[];t.cross=undefined;t.last={mediaUs:frame.mediaUs};}else{t.history.push({side,frame,confidence:d.confidence});t.history=t.history.slice(-3);t.last=frame;}t.x=d.x;t.y=d.y;
+   if(t.emitted){t.history=[];t.cross=undefined;t.last={mediaUs:frame.mediaUs};}else{t.history.push({side,frame,confidence:d.confidence});t.history=t.history.slice(-3);t.last=frame;}t.x=d.x;t.y=d.y;t.edge=d.edge;
   }
-  // Keep emitted identities for the whole recording: re-entry cannot create a new finish.
-  // Reappearance after a long disappearance is ambiguous instead of guessed as a new person.
-  if(this.tracks.some(t=>frame.mediaUs-t.last.mediaUs>750000))for(const t of this.tracks)if(!used.has(t.id))t.ambiguous=true;
   return events;
  }
 }

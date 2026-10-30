@@ -6,11 +6,14 @@ namespace ObstacleTimer.Desktop;
 public partial class App : Application
 {
     private TimingHub? hub;
+    private Mutex? runningMarker;
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         try
         {
+            // Installer checks this marker and never closes a competition instance.
+            if(!e.Args.Contains("--simulate"))runningMarker=new Mutex(false,@"Local\ObstacleTimer.Desktop.Running");
             string data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ObstacleTimer");
             int port = 8765;
             for (int i = 0; i < e.Args.Length - 1; i++)
@@ -57,6 +60,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         if (hub != null) Task.Run(async () => await hub.DisposeAsync()).GetAwaiter().GetResult();
+        runningMarker?.Dispose();
         base.OnExit(e);
     }
 }

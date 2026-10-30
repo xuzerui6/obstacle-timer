@@ -3,7 +3,7 @@
     <TargetFramework>net10.0-windows</TargetFramework><OutputType>WinExe</OutputType><UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AssemblyName>ObstacleTimer</AssemblyName><ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.4.1</Version>
+    <Version>0.5.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../ObstacleTimer.Core/ObstacleTimer.Core.csproj"/>

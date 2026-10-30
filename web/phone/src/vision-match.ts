@@ -1,19 +1,22 @@
 import {frameTimes,presentedFrame} from './frame-index';
 import {hashDistance,pixelHash} from './torso.mjs';
 import {id,type Clip,type VisionItem} from './types';
-export async function matchOriginal(clip:Clip,blob:Blob,item:VisionItem):Promise<{proof?:unknown;reason?:string}>{
+import {UploadYield} from './retry-policy.mjs';
+export async function matchOriginal(clip:Clip,blob:Blob,item:VisionItem,shouldPause=()=>false):Promise<{proof?:unknown;reason?:string}>{
  const origin=clip.previewFrames[0]?.mediaUs;if(origin==null)return {reason:'无可核验的首帧参考，保留候选'};
  const video=document.createElement('video');video.muted=true;video.playsInline=true;video.src=URL.createObjectURL(blob);
- const canvas=document.createElement('canvas');canvas.width=480;canvas.height=Math.round(480*clip.height/clip.width);
+ const canvas=document.createElement('canvas');const geometry=item.payload.geometry??clip.frameGeometry;
+ if(geometry){canvas.width=geometry.width;canvas.height=geometry.height;}else{const source=await createImageBitmap(item.files.image);canvas.width=source.width;canvas.height=source.height;source.close();}
  try{
-  await new Promise<void>((resolve,reject)=>{video.onloadeddata=()=>resolve();video.onerror=()=>reject(new Error('原片解码失败'));});
+  await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('原片解码超时')),10000);video.onloadeddata=()=>{clearTimeout(timer);resolve();};video.onerror=()=>{clearTimeout(timer);reject(new Error('原片解码失败'));};});
   const pts=await frameTimes(blob),actuals=new Map<number,{pts:number;hash:string}>(),selected=[];
   for(const [index,liveUs] of [item.payload.beforeMediaUs,item.payload.clock.mediaUs,item.payload.afterMediaUs].entries()){
+   if(shouldPause())throw new UploadYield();
    // The relative live PTS locates a search window only. It never determines elapsed time.
    const target=(liveUs-origin)/1e6,near=pts.filter(p=>Math.abs(p-target)<.75);
    if(near.length>180||!near.length)return {reason:'原片对应搜索范围异常'};
    const options=[];
-   for(const p of near){let value=actuals.get(p);if(!value){const frame=await presentedFrame(video,p),bitmap=await createImageBitmap(frame.image);canvas.getContext('2d')!.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();const image=canvas.getContext('2d',{willReadFrequently:true})!.getImageData(0,0,canvas.width,canvas.height);value={pts:frame.mediaUs,hash:pixelHash(image.data,image.width,image.height)};actuals.set(p,value);}options.push({...value,d:hashDistance(item.payload.frameHashes[index],value.hash)});}
+   for(const p of near){if(shouldPause())throw new UploadYield();let value=actuals.get(p);if(!value){const frame=await presentedFrame(video,p),bitmap=await createImageBitmap(frame.image);canvas.getContext('2d')!.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();const image=canvas.getContext('2d',{willReadFrequently:true})!.getImageData(0,0,canvas.width,canvas.height);value={pts:frame.mediaUs,hash:pixelHash(image.data,image.width,image.height)};actuals.set(p,value);}options.push({...value,d:hashDistance(item.payload.frameHashes[index],value.hash)});}
    const unique=[...new Map(options.map(o=>[o.pts,o])).values()].sort((a,b)=>a.d-b.d);
    if(unique.length<2||unique[0].d>16||unique[1].d-unique[0].d<4)return {reason:'原片帧对应不唯一，保持待核验'};
    selected.push({...unique[0],margin:unique[1].d-unique[0].d});

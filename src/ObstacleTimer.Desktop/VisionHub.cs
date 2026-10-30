@@ -15,12 +15,12 @@ public sealed partial class TimingHub
         string usb="";
         using(var key=Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Enum\USB\VID_0C4A&PID_088B"))
             if(key!=null)usb=string.Join("|",key.GetSubKeyNames().Order());
-        string text=Environment.MachineName+"|"+Environment.OSVersion+"|"+usb+"|"+(File.Exists(dll)?Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(dll))):"no-sdk")+"|vision-v3";
+        string text=Environment.MachineName+"|"+Environment.OSVersion+"|"+usb+"|"+(File.Exists(dll)?Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(dll))):"no-sdk")+"|vision-v4-pixels-session-v3";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
     }
     private string SyncProof(string device,string id,long t1,long t2,long t3)=>Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(PairSecret),
         Encoding.UTF8.GetBytes($"{Engine.SessionId}|{device}|{id}|{t1}|{t2}|{t3}"))).ToLowerInvariant();
-    private bool VerifyNetwork(VisionSubmission s)=>s.Clock.SessionId==Engine.SessionId && s.Clock.Samples.Length>=5 && s.Clock.Samples.All(t=>
+    private bool VerifyNetwork(VisionSubmission s)=>s.Clock!=null && s.Clock.SessionId==Engine.SessionId && s.Clock.Samples.Length>=5 && s.Clock.Samples.All(t=>t!=null&&
         t.T4>=t.T1 && t.T3>=t.T2 && t.Proof==SyncProof(s.DeviceId,t.Id,t.T1,t.T2,t.T3));
     public void AssignVision(string heat,string vision,string run,int version,string note)=>Mutate("visionAssigned",()=>{Engine.AssignVision(heat,vision,run,version,note);return true;});
     public void UnassignVision(string heat,string vision,int version,string note,bool ignore=false)=>Mutate("visionUnassigned",()=>{Engine.UnassignVision(heat,vision,version,note,ignore);return true;});
@@ -33,8 +33,10 @@ public sealed partial class TimingHub
     private void UpdateVisionEvidence(string owner)
     {
         var h=Engine.GetHeat(owner);
-        foreach(var v in h.VisionEvents)
+        foreach(var v in h.VisionEvents){
+            v.OriginalReceived=store.HasEvidence(h.RecordingId,"video",h.Id);
             Engine.SetVisionEvidence(v.Id,new[]{"image","before","after","mask","metadata"}.All(kind=>store.HasEvidence(v.Id,kind,h.Id)));
+        }
     }
     private void MapVisionEndpoints(WebApplication app)
     {
@@ -43,6 +45,12 @@ public sealed partial class TimingHub
             var s=await JsonSerializer.DeserializeAsync<VisionSubmission>(c.Request.Body,Wire.Json)??throw new DomainException("缺少视觉事件");
             if(s.DeviceId!=Device(c)||!SafeId(s.EventId)||!SafeId(s.RequestId)||s.Clock?.Samples==null||s.Clock.Samples.Length>120)throw new DomainException("视觉事件身份或采样无效");
             var result=Mutate("visionCandidate",()=>Engine.SubmitVision(s,VerifyNetwork(s)));
+            await c.Response.WriteAsJsonAsync(new{accepted=true,result},Wire.Json);
+        });
+        app.MapPost("/api/vision-candidates/offline",async(HttpContext c)=>{
+            var s=await JsonSerializer.DeserializeAsync<VisionSubmission>(c.Request.Body,Wire.Json)??throw new DomainException("缺少补检候选");
+            if(s.DeviceId!=Device(c)||!SafeId(s.EventId)||!SafeId(s.RequestId)||s.Origin is not ("offline" or "manual")||s.Clock!=null)throw new DomainException("补检候选不能提供或伪造计时时钟");
+            var result=Mutate("offlineCandidate",()=>Engine.SubmitVision(s,false));
             await c.Response.WriteAsJsonAsync(new{accepted=true,result},Wire.Json);
         });
         app.MapPost("/api/vision-events/{id}/correspondence",async(string id,HttpContext c)=>
@@ -58,5 +66,15 @@ public sealed partial class TimingHub
             });
             await c.Response.WriteAsJsonAsync(new{accepted=true},Wire.Json);
         });
+        app.MapPost("/api/vision-events/{id}/verification",async(string id,HttpContext c)=>{
+            var report=await JsonSerializer.DeserializeAsync<VerificationReport>(c.Request.Body,Wire.Json)??throw new DomainException("缺少核验状态");
+            Mutate("verificationReported",()=>{
+                var v=Engine.GetVision(id);var h=Engine.GetHeat(v.Submission.HeatId);
+                if(h.DeviceId!=Device(c)||report.State is not ("verified" or "needs-review" or "unmapped")||report.Reason==null||report.Reason.Length>1000)throw new DomainException("核验状态或归属无效");
+                if(report.State=="verified"&&v.Correspondence==null)throw new DomainException("电脑尚未收到有效的原片对应证据");
+                if(v.Correspondence==null){v.FileVerificationState=report.State;v.VerificationNote=report.Reason;Engine.EvaluateVision(v);}return true;
+            });await c.Response.WriteAsJsonAsync(new{accepted=true},Wire.Json);
+        });
     }
+    private sealed record VerificationReport(string State,string Reason);
 }

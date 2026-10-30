@@ -14,16 +14,20 @@ public record SignedSyncSample(string Id, long T1, long T2, long T3, long T4, st
 public record FrameClockEvidence(string SessionId, string PageClockId, string MapId, string Source, long MediaUs, long ClientUs,
     long CallbackClientUs, SignedSyncSample[] Samples);
 public record VisionSubmission(string RequestId, string EventId, string HeatId, string RecordingId, string DeviceId, string TrackId,
-    string ModelVersion, string CaptureFingerprint, VisionSettings Settings, FrameClockEvidence Clock, long BeforeMediaUs, long AfterMediaUs,
-    long MaxFrameGapUs, double Confidence, bool Ambiguous, string[] Issues, string[] FrameHashes);
+    string ModelVersion, string CaptureFingerprint, VisionSettings Settings, FrameClockEvidence? Clock, long BeforeMediaUs, long AfterMediaUs,
+    long MaxFrameGapUs, double Confidence, bool Ambiguous, string[] Issues, string[] FrameHashes, FrameGeometry? Geometry=null, string Origin="live", long? OriginalFramePtsUs=null, string AnalysisRunId="");
+public record FrameGeometry(int Width,int Height,string HashVersion="dhash256-v1");
 public sealed class VisionEvent
 {
+    public string FileVerificationState { get; set; } = "queued";
+    public string VerificationNote { get; set; } = "";
     public VisionSubmission Submission { get; set; } = null!;
     public string Id => Submission.EventId;
     public string? RunId { get; set; }
     public bool Ignored { get; set; }
     public bool NetworkProofVerified { get; set; }
     public bool EvidenceReceived { get; set; }
+    public bool OriginalReceived { get; set; }
     public FrameCorrespondence? Correspondence { get; set; }
     public List<FrameCorrespondence> CorrespondenceHistory { get; set; } = [];
     public long? ManualFramePtsUs { get; set; }
@@ -73,7 +77,8 @@ public sealed class CameraValidationProfile
 
 public sealed partial class RaceEngine
 {
-    public const string VisionModelVersion = "bodypix-2.2.1-m075-s8-q2-torso-v1";
+    public const string VisionModelVersion = "bodypix-2.2.1-m075-s8-q2-torso-v2";
+    public const string LegacyVisionModelVersion="bodypix-2.2.1-m075-s8-q2-torso-v1";
     public string RigFingerprint { get; set; } = "unverified-rig";
     public List<CameraValidationProfile> ValidationProfiles { get; } = [];
     public List<VisionEvent> VisionEvents => Heats.SelectMany(h=>h.VisionEvents).ToList();
@@ -87,6 +92,7 @@ public sealed partial class RaceEngine
     }
     public VisionEvent SubmitVision(VisionSubmission s, bool networkProofVerified)
     {
+        if(s.Settings==null||s.Issues==null||s.FrameHashes==null||s.FrameHashes.Any(h=>h==null)||s.TrackId==null||s.CaptureFingerprint==null||s.AnalysisRunId==null)throw new DomainException("视觉候选缺少必要字段");
         var h=GetHeat(s.HeatId);
         if (h.FinishAuthority!="camera-primary" || h.DeviceId!=s.DeviceId || h.RecordingId!=s.RecordingId || h.RecordingId.Length==0)
             throw new DomainException("视觉事件与组次/手机/原片不符");
@@ -97,17 +103,25 @@ public sealed partial class RaceEngine
             return old;
         }
         s.Settings.Validate();
-        if(s.Settings!=h.Vision || s.TrackId.Length==0 || s.ModelVersion!=VisionModelVersion || s.CaptureFingerprint!=h.Capture?.CaptureFingerprint ||
-            s.Clock.Samples.Length>120 || s.Clock.ClientUs<=0 || s.Clock.PageClockId.Length==0 || s.Clock.MapId.Length==0 || s.BeforeMediaUs<0 || s.BeforeMediaUs>=s.Clock.MediaUs || s.AfterMediaUs<=s.Clock.MediaUs ||
+        if(s.Origin=="live" && s.Settings!=h.Vision || s.TrackId.Length==0 || s.ModelVersion!=VisionModelVersion && s.ModelVersion!=LegacyVisionModelVersion || s.CaptureFingerprint!=h.Capture?.CaptureFingerprint ||
+            s.Origin is not ("live" or "offline" or "manual") || s.Origin=="live" && (s.Clock==null || s.Clock.Samples==null || s.Clock.Samples.Length>120 || s.Clock.ClientUs<=0 || s.Clock.PageClockId.Length==0 || s.Clock.MapId.Length==0) || s.BeforeMediaUs<0 || s.BeforeMediaUs>=(s.Clock?.MediaUs??s.OriginalFramePtsUs) || s.AfterMediaUs<=(s.Clock?.MediaUs??s.OriginalFramePtsUs) ||
+            s.Origin!="live" && (s.Clock!=null || s.OriginalFramePtsUs==null || s.AnalysisRunId.Length==0) ||
             s.MaxFrameGapUs<0 || !double.IsFinite(s.Confidence) || s.Confidence is < 0 or >1 || s.FrameHashes.Length!=3 ||
             s.FrameHashes.Any(hash=>hash.Length!=64 || !hash.All(Uri.IsHexDigit))) throw new DomainException("视觉帧、时钟或掩膜信息无效");
+        if(s.Geometry is {} g && (g.Width is <1 or >4096 || g.Height is <1 or >4096 || g.HashVersion!="dhash256-v1"))throw new DomainException("分析帧尺寸或哈希版本无效");
         if(h.VisionEvents.Any(v=>v.Submission.TrackId==s.TrackId)) throw new DomainException("同一轨迹已记录过线，不重复计时");
         var v=new VisionEvent{Submission=s,NetworkProofVerified=networkProofVerified,Revision=1};h.VisionEvents.Add(v);h.Version++;
         EvaluateVision(v);return v;
     }
-    public void EvaluateVision(VisionEvent v)
+    public void EvaluateVision(VisionEvent v,bool apply=true)
     {
         var s=v.Submission;var h=GetHeat(s.HeatId);var reasons=new List<string>();v.Eligible=false;v.ValidationId=null;
+        if(s.Clock==null || s.Origin!="live"){
+            v.EstimatedElapsedUs=null;v.Reasons=["原片补检/人工选帧无有效采集时钟映射",..s.Issues];
+            if(!v.EvidenceReceived)v.Reasons.Add("过线证据未完整接收");
+            if(apply)ApplyVisionAssessment(v);return;
+        }
+        if(s.Geometry==null||s.ModelVersion!=VisionModelVersion)reasons.Add("旧版帧证据或检测流水线未通过本版验证");
         if(h.Start==null)reasons.Add("缺少共同起跑");
         if(h.SessionId!=SessionId || s.Clock.SessionId!=SessionId)reasons.Add("时钟会话已变化");
         if(!v.NetworkProofVerified)reasons.Add("网络采样证据无法核验");
@@ -130,7 +144,7 @@ public sealed partial class RaceEngine
         }
         catch(Exception ex)when(ex is DomainException or OverflowException){reasons.Add("同步样本不足或无效");v.EstimatedElapsedUs=null;}
         if(!v.EvidenceReceived)reasons.Add("过线前后帧/躯干掩膜证据未完整接收");
-        if(v.Correspondence==null)reasons.Add("原片帧对应关系未核验");
+        if(v.Correspondence==null){reasons.Add("原片帧对应关系未核验");if(v.VerificationNote.Length>0)reasons.Add(v.VerificationNote);}
         if(v.ManualFramePtsUs.HasValue && v.ManualFramePtsUs!=v.Correspondence?.FramePtsUs)reasons.Add("人工更正帧尚未取得有效采集时间映射");
         var p=ValidationProfiles.FirstOrDefault(p=>p.Passes && p.RigFingerprint==RigFingerprint && p.CaptureFingerprint==s.CaptureFingerprint &&
             p.ModelVersion==s.ModelVersion && p.ClockSource==s.Clock.Source && p.SettingsJson==System.Text.Json.JsonSerializer.Serialize(s.Settings,Wire.Json));
@@ -146,15 +160,20 @@ public sealed partial class RaceEngine
             if(v.EstimatedElapsedUs.HasValue) v.EstimatedElapsedUs+=p.UsbDelayCorrectionUs-p.CameraDelayCorrectionUs;
         }
         v.Reasons=reasons.Distinct().ToList();v.Eligible=v.Reasons.Count==0&&v.EstimatedElapsedUs>0;
+        if(apply)ApplyVisionAssessment(v);
+    }
+    private void ApplyVisionAssessment(VisionEvent v)
+    {
         if(v.RunId is { } runId)
         {
             var r=Get(runId);r.VisionStatus=string.Join("；",v.Reasons);
+            if(r.State is RunState.Dns or RunState.Dnf or RunState.Dsq or RunState.Cancelled)return;
             if(r.OfficialSource=="camera" && !v.Eligible)
             {
                 r.Revisions.Add(new ResultRevision(r.Revision+1,Wire.Id(),"pending",null,null,null,v.Id,"视频条件变化："+r.VisionStatus,DateTimeOffset.UtcNow,"","camera-pending"));
                 r.State=RunState.Pending;r.OfficialSource="pending";
             }
-            if(r.OfficialSource!="photocell-backup" && !r.SourceReviewRequired && !r.IsTerminal)
+            if(GetHeat(v.Submission.HeatId).State!=HeatState.Closed && r.OfficialSource!="photocell-backup" && !r.SourceReviewRequired && !r.IsTerminal)
             {
                 if(v.Eligible) ConfirmCamera(r,v,"系统自动核验通过");else r.State=RunState.Pending;
             }
@@ -182,7 +201,7 @@ public sealed partial class RaceEngine
         int maximum=0;
         for(int i=0;i<3;i++)maximum=Math.Max(maximum,HashDistance(v.Submission.FrameHashes[i],proof.Hashes[i]));
         if(maximum!=proof.MaxHashDistance)throw new DomainException("帧图像哈希距离不符");
-        v.Correspondence=proof;v.CorrespondenceHistory.Add(proof);v.Revision++;EvaluateVision(v);
+        v.Correspondence=proof;v.CorrespondenceHistory.Add(proof);v.FileVerificationState="verified";v.VerificationNote="";v.Revision++;EvaluateVision(v);
     }
     private static int HashDistance(string a,string b)
     {
@@ -192,17 +211,19 @@ public sealed partial class RaceEngine
     }
     private static void ConfirmCamera(RaceRun r,VisionEvent v,string note)
     {
-        if(!v.Eligible||v.EstimatedElapsedUs==null)throw new DomainException("视频未通过0.01秒实测/证据门槛");
-        r.Revisions.Add(new ResultRevision(r.Revision+1,Wire.Id(),"confirmed",v.EstimatedElapsedUs,v.Submission.Clock.MediaUs,v.Submission.Clock.ClientUs,v.Id,note,DateTimeOffset.UtcNow,"","camera-validated"));
+        if(!v.Eligible||v.EstimatedElapsedUs==null||v.Submission.Origin!="live"||v.Submission.Clock==null)throw new DomainException("视频未通过0.01秒实测/证据门槛");
+        if(r.State==RunState.Confirmed && r.OfficialSource=="camera" && r.ElapsedUs==v.EstimatedElapsedUs)return;
+        r.Revisions.Add(new ResultRevision(r.Revision+1,Wire.Id(),"confirmed",v.EstimatedElapsedUs,v.Submission.Clock?.MediaUs,v.Submission.Clock?.ClientUs,v.Id,note,DateTimeOffset.UtcNow,"","camera-validated"));
         r.State=RunState.Confirmed;r.OfficialSource="camera";
     }
     public void SelectOfficialSource(string heatId,string runId,int version,string source,string note)
     {
         var h=EditableHeat(heatId,version);var r=Get(runId);RequireNote(note);
-        if(r.HeatId!=h.Id||h.FinishAuthority!="camera-primary"||r.State is RunState.Dns or RunState.Dnf or RunState.Dsq or RunState.Cancelled)throw new DomainException("选手或计时来源不符");
+        if(h.State==HeatState.Closed||r.HeatId!=h.Id||h.FinishAuthority!="camera-primary"||r.State is RunState.Dns or RunState.Dnf or RunState.Dsq or RunState.Cancelled)throw new DomainException("选手或计时来源不符");
         if(source=="photocell-backup")
         {
             if(r.BackupElapsedUs==null||r.FinishEventId==null)throw new DomainException("请先匹配并核验光电门备份事件");
+            if(r.State==RunState.Confirmed && r.OfficialSource==source && r.ElapsedUs==r.BackupElapsedUs)return;
             r.Revisions.Add(new ResultRevision(r.Revision+1,Wire.Id(),"confirmed",r.BackupElapsedUs,null,null,null,note,DateTimeOffset.UtcNow,"","photocell-backup"));
             r.State=RunState.Confirmed;r.OfficialSource="photocell-backup";
             r.SourceReviewRequired=true;
@@ -210,7 +231,9 @@ public sealed partial class RaceEngine
         else if(source=="camera")
         {
             if(r.VisionEventId==null)throw new DomainException("请先绑定视频过线事件");
-            var v=GetVision(r.VisionEventId);EvaluateVision(v);ConfirmCamera(r,v,note);r.SourceReviewRequired=false;
+            var v=GetVision(r.VisionEventId);EvaluateVision(v,false);
+            if(v.Eligible&&r.State==RunState.Confirmed&&r.OfficialSource=="camera"&&r.ElapsedUs==v.EstimatedElapsedUs&&!r.SourceReviewRequired)return;
+            ConfirmCamera(r,v,note);r.SourceReviewRequired=false;
         }
         else throw new DomainException("来源无效");
         h.Version++;Audit(h,"officialSourceChanged",note);
@@ -219,10 +242,11 @@ public sealed partial class RaceEngine
     {
         var h=EditableHeat(heatId,version);var v=GetVision(eventId);RequireNote(note);
         if(v.Submission.HeatId!=h.Id||h.State==HeatState.Closed)throw new DomainException("请先打开本组");
+        if(v.RunId==null&&v.Ignored==ignore)return;
         if(v.RunId!=null)
         {
             var r=Get(v.RunId);r.VisionEventId=null;r.VisionStatus="视觉绑定已撤销";
-            if(r.OfficialSource=="camera"){r.Revisions.Add(new ResultRevision(r.Revision+1,Wire.Id(),"pending",null,null,null,null,note,DateTimeOffset.UtcNow,"","camera-pending"));r.State=RunState.Pending;r.OfficialSource="pending";}
+            if(r.OfficialSource=="camera" && r.State is not (RunState.Dns or RunState.Dnf or RunState.Dsq or RunState.Cancelled)){r.Revisions.Add(new ResultRevision(r.Revision+1,Wire.Id(),"pending",null,null,null,null,note,DateTimeOffset.UtcNow,"","camera-pending"));r.State=RunState.Pending;r.OfficialSource="pending";}
         }
         v.RunId=null;v.Ignored=ignore;h.Version++;Audit(h,ignore?"visionIgnored":"visionUnassigned",note);
     }

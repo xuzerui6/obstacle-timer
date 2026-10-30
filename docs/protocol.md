@@ -1,6 +1,6 @@
-# Protocol v3 — camera-primary torso events, independent optical backup
+# Protocol v4 — camera-primary torso events, independent optical backup
 
-UTF-8 JSON, camelCase, microsecond integer clocks. HTTP8765 supplies setup/CA; HTTPS/WSS8766 supplies phone, pairing and authenticated APIs. Pair/state/health advertise protocol3. v2 clients are rejected by the phone. Legacy result endpoints cannot write any heat-owned runner's official time. Group administration and source selection are local WPF operations, never LAN admin endpoints.
+UTF-8 JSON, camelCase, microsecond integer clocks. HTTP8765 supplies setup/CA; HTTPS/WSS8766 supplies phone, pairing and authenticated APIs. Pair/state/health advertise protocol4. v2 clients are rejected by the phone. Legacy result endpoints cannot write any heat-owned runner's official time. Group administration and source selection are local WPF operations, never LAN admin endpoints.
 
 New Heat.finishAuthority is camera-primary; missing historical JSON fields default to timy-device. requireRecordingBeforeStart:false retains manual camera operation. C0/C0M records common start; C1/C1M forms an independent one-to-one backup queue. Hardware backup elapsed uses device-time difference. Only explicit source selection with reason changes official source to photocell-backup. Video, optical and review revisions are independent. All binding/source operations snapshot optical bindings, visual bindings and selected sources in the transaction log.
 
@@ -28,9 +28,27 @@ CameraValidationProfile binds rig/capture/model/clock/settings, correction param
 
 OfficialSource camera requires full eligibility; photocell-backup requires matched verified device event plus explicit reason. Undo of an adopted backup requires renewed source review. Revisions preserve past scores and source. Ranking uses official confirmed results only and heat rounding, excludes simulation and legacy estimates.
 
-SQLite schema3 stores nested visual events with heats and validation_profiles plus existing runs/evidence/audits. Migration from1/2 uses SQLite backup API to pre-v3 snapshot before mutation, preserving historical timingMethod and default timy-device authority. Phone IndexedDB schema2 adds visual outbox while preserving schema1 clips/chunks/reviews. Host restart creates a fresh clock epoch: pending old-session candidates cannot be silently mapped into it; accepted historical revisions remain stored.
+SQLite schema4 stores nested visual events with heats and validation_profiles plus existing runs/evidence/audits. Migration from1/2/3 uses SQLite backup API to pre-v4 snapshot before mutation, preserving historical timingMethod and default timy-device authority. Phone IndexedDB schema3 adds analysisJobs while preserving clips/chunks/reviews/visual outbox. Host restart creates a fresh clock epoch: pending old-session candidates cannot be silently mapped into it; accepted historical revisions remain stored.
 
 
 ## 0.4.1 diagnostics and explicit pending closure
 
 Authenticated WSS visionStatus carries heatId,recordingId,status,captured,analyzed,people,torsoPixels,queued,generated,saved,lastError. The host checks ownership and displays recent per-group diagnostics. It is operational status, not timing evidence. Ending a group locally can explicitly close with pending records: original unmatched events remain unassigned, existing statuses/results remain, unfinished athletes receive an append-only pending revision and require source review. closedWithPending/closureNote and an audit record retain the decision. The phone stops and saves its recording when that group becomes closed. Strict complete closure remains available. No LAN group-administration endpoint is added.
+
+## v4 candidate origins, sessions and original reanalysis
+
+App version0.5.0 is advertised alongside protocol4 in pairing, state and health. New model version is bodypix-2.2.1-m075-s8-q2-torso-v2. The capture and rig fingerprints include new session/pixel adapters; legacy measured profiles cannot enable this pipeline.
+
+VisionSubmission adds origin (live/offline/manual), geometry {width,height,hashVersion:dhash256-v1}, originalFramePtsUs and analysisRunId. Live still requires pixel-bound FrameClockEvidence. Offline/manual explicitly use clock:null, actual original PTS, and an analysis configuration key. POST /api/vision-candidates/offline checks device/heat/shared-recording ownership and immutable request IDs, rejects supplied clocks, and can only produce unmapped candidates with estimatedElapsedUs:null and eligible:false. It cannot update an official score. Rescan identity binds recording/config/PTS/person instance/mask, distinguishing people in the same frame. Old POST /api/vision-events payloads and evidence are accepted conservatively; missing geometry/legacy model stays pending.
+
+Worker RPC carries requestId plus sessionId and checks worker epoch on delivery. Each recording, reset and offline task starts a fresh session. Load timeout30s, frame timeout10s; live recovery retries at most twice before explicit manual retry. No stale response can complete a new session request. Original recording remains independent.
+
+Offline jobs persist ranges, last processed actual PTS and progress in IndexedDB3. Resume replays a small overlap to reconstruct continuity; immutable candidate IDs suppress repeats. Recording preempts the task. MP4 indexing honors tfdt fragment boundaries rather than smoothing gaps with an estimated previous duration; WebM metadata indexing skips encoded payloads with bounded reads. Original frame matching uses stored analysis geometry/hash version. No offline PTS is converted to official elapsed time.
+
+## v4 stop requests and file verification
+
+State.recordingStopRequests is an array of {heatId,recordingId} for all device-owned unacknowledged requests, including archived groups. Empty recordingId permits first metadata registration after closure. POST /api/recording-ready can acknowledge that immutable late registration without reopening timing. POST /api/recording-status with recording:false separately confirms saved state; a newer active group never changes the ownership of an older acknowledgment. Heat.stopRecordingRequested and recordingSaveConfirmed are distinct from business closure/recordingStopped.
+
+VisionEvent.fileVerificationState (queued/verified/needs-review/unmapped) and verificationNote are independent of evidence receipts. POST /api/vision-events/{id}/verification accepts {state,reason}; verified requires a server-accepted SHA-bound FrameCorrespondence. A file upload cannot assert clock validity. Correspondence failures can be retried. Lightweight candidate/screenshots, chunked originals and decoding verification use separate scheduling; recording preempts original transfer between chunks and decoding between frames. HTTP timeout/backoff applies, 401/403 asks for re-pairing, 409 blocks the immutable item for review. Neither pairing nor upgrades erase files.
+
+WSS visionStatus also carries stage and analysisSessionId with counters. These are operational diagnostics only. DNS/DNF/DSQ state is protected against asynchronous evidence and unbinding; source selection and score revisions remain transactional and idempotent.

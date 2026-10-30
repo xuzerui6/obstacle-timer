@@ -12,7 +12,7 @@ internal static class VisionHttpTests
 {
     public static async Task Run(Action<bool,string> check)
     {
-        var listener=new TcpListener(System.Net.IPAddress.Loopback,0);listener.Start();int port=((System.Net.IPEndPoint)listener.LocalEndpoint).Port;listener.Stop();
+        int port=TestPorts.Pair();
         string folder=Path.Combine(Path.GetTempPath(),"Obstacle-vision-http-"+Wire.Id());
         await using(var hub=new TimingHub(folder,port,true))
         {
@@ -42,12 +42,12 @@ internal static class VisionHttpTests
                 var reply=await Receive("sync");samples.Add(new(id,t1,reply.GetProperty("t2").GetInt64(),reply.GetProperty("t3").GetInt64(),t1+5000,reply.GetProperty("proof").GetString()!));
             }
             var s=new VisionSubmission("request","vision",h.Id,"original","phone","track",RaceEngine.VisionModelVersion,"capture",settings,
-                new(hub.Engine.SessionId,"page","map","rvfc-presentationTime",100000,12_000_000,99_000_000,samples.ToArray()),90000,110000,10000,.95,false,[],[new('0',64),new('1',64),new('2',64)]);
+                new(hub.Engine.SessionId,"page","map","rvfc-presentationTime",100000,12_000_000,99_000_000,samples.ToArray()),90000,110000,10000,.95,false,[],[new('0',64),new('1',64),new('2',64)],new FrameGeometry(320,180));
             var response=await Post("/api/vision-events",s);response.EnsureSuccessStatusCode();
             check(hub.Engine.GetVision("vision").NetworkProofVerified,"v3 verifies real WSS HMAC sample proofs on the computer");
             hub.AssignVision(h.Id,"vision",hub.Engine.Members(h).Single().Id,h.Version,"测试号码");
             var retry=await Post("/api/vision-events",s);retry.EnsureSuccessStatusCode();check(h.VisionEvents.Count==1,"HTTP visual retry cannot duplicate a crossing");
-            var corrupted=await Post("/api/vision-events",s with{RequestId="bad",EventId="bad",TrackId="bad",Clock=s.Clock with{Samples=samples.Select(x=>x with{Proof="bad"}).ToArray()}});corrupted.EnsureSuccessStatusCode();
+            var corrupted=await Post("/api/vision-events",s with{RequestId="bad",EventId="bad",TrackId="bad",Clock=s.Clock! with{Samples=samples.Select(x=>x with{Proof="bad"}).ToArray()}});corrupted.EnsureSuccessStatusCode();
             check(!hub.Engine.GetVision("bad").NetworkProofVerified&&!hub.Engine.GetVision("bad").Eligible,"invalid signed samples are retained as pending instead of producing an official score");
             var proof=await Post("/api/vision-events/vision/correspondence",new FrameCorrespondence("proof","vision",1,2,3,0,8,s.FrameHashes,new('a',64)));
             check(!proof.IsSuccessStatusCode,"original frame proof is rejected before SHA256-confirmed video receipt");
@@ -57,15 +57,27 @@ internal static class VisionHttpTests
             }
             h=hub.Engine.GetHeat(h.Id);var v=hub.Engine.GetVision("vision");var run=hub.Engine.Members(h).Single();
             check(v.EvidenceReceived&&!v.Eligible&&run.ElapsedUs==null,"all five vision evidence receipts never bypass profile/original-frame gates");
+            check(!v.OriginalReceived&&v.FileVerificationState=="queued","small image receipts are distinct from original completion and frame verification");
+            var originalBytes=Encoding.UTF8.GetBytes("SYNTHETIC ORIGINAL TEST BYTES");string originalHash=Convert.ToHexString(SHA256.HashData(originalBytes)).ToLowerInvariant();
+            (await http.PostAsync($"/api/heat-evidence/original/video?heatId={h.Id}&offset=0&length={originalBytes.Length}&sha256={originalHash}",new ByteArrayContent(originalBytes))).EnsureSuccessStatusCode();
+            check(v.OriginalReceived&&v.Correspondence==null&&!v.Eligible,"original transfer completion cannot masquerade as frame correspondence verification");
             hub.Inject("0002 C1M 12:00:02.00 00");hub.AssignFinish(h.Id,h.Finishes.Single().Id,run.Id,h.Version,"备份号码");
             check(run.BackupElapsedUs==2000000&&run.ElapsedUs==null,"HTTP vision group keeps optical backup independent");
             hub.SelectOfficial(h.Id,run.Id,h.Version,"photocell-backup","测试明确采用备份");
             string csv=Path.Combine(folder,"vision.csv");hub.ExportCsv(csv);check(File.ReadAllText(csv).Contains("视频候选微秒")&&File.ReadAllText(csv).Contains("photocell-backup"),"CSV retains both sources, difference and selected source");
+            var offline=s with{RequestId="offline",EventId="offline",TrackId="offline-track",Clock=null,Origin="offline",OriginalFramePtsUs=100000,AnalysisRunId="job"};
+            var off=await Post("/api/vision-candidates/offline",offline);off.EnsureSuccessStatusCode();
+            var ov=hub.Engine.GetVision("offline");check(ov.EstimatedElapsedUs==null&&!ov.Eligible&&run.ElapsedUs==2000000,"offline candidate is visible without a fabricated clock and cannot override an adopted backup");
+            var offRetry=await Post("/api/vision-candidates/offline",offline);offRetry.EnsureSuccessStatusCode();check(hub.Engine.VisionEvents.Count(v=>v.Id=="offline")==1,"offline replay is idempotent");
+            var spoofed=await Post("/api/vision-candidates/offline",offline with{RequestId="spoof",EventId="spoof",Clock=s.Clock});check(!spoofed.IsSuccessStatusCode,"offline endpoint rejects a fabricated live clock");
+            h=hub.Engine.GetHeat(h.Id);var legacy=s with{RequestId="legacy",EventId="legacy",TrackId="legacy-track",ModelVersion=RaceEngine.LegacyVisionModelVersion,Geometry=null};
+            var old=await Post("/api/vision-events",legacy);old.EnsureSuccessStatusCode();check(!hub.Engine.GetVision("legacy").Eligible,"v3 pending events remain uploadable but cannot inherit a new validated pipeline");
+            var blocked=await Post("/api/vision-events/offline/verification",new{state="verified",reason="client claim"});check(!blocked.IsSuccessStatusCode,"client status cannot bypass original receipt and frame correspondence");
             ws.Abort();
         }
         using(var db=new SqliteConnection("Data Source="+Path.Combine(folder,"timing.sqlite"))){db.Open();using var cmd=db.CreateCommand();cmd.CommandText="PRAGMA user_version=2";cmd.ExecuteNonQuery();}
         await using(var restored=new TimingHub(folder,port,true)){
-            check(Directory.GetFiles(folder,"timing.pre-v3-*.sqlite").Length==1,"SQLite v2 is backed up before the v3 migration");
+            check(Directory.GetFiles(folder,"timing.pre-v4-*.sqlite").Length==1,"SQLite v2 is backed up before the v3 migration");
             check(restored.Engine.Runs.Single().OfficialSource=="photocell-backup"&&restored.Engine.Runs.Single().ElapsedUs==2000000,"restart preserves explicitly selected backup and visual history");
         }
     }

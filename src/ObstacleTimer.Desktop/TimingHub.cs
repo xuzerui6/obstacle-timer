@@ -41,7 +41,9 @@ public sealed partial class TimingHub : IAsyncDisposable
     {
         Port = port; Simulation = simulation; Engine = new RaceEngine(Wire.Id());
         Engine.RigFingerprint = RigId();
-        store = new Store(directory); store.Load(Engine); store.Save(Engine, "hostStarted", new { Engine.SessionId });
+        store = new Store(directory); store.Load(Engine);
+        foreach(var heat in Engine.Heats)foreach(var candidate in heat.VisionEvents)candidate.OriginalReceived=store.HasEvidence(heat.RecordingId,"video",heat.Id);
+        store.Save(Engine, "hostStarted", new { Engine.SessionId });
         certificates = new LocalCertificates(directory);
     }
     public static string[] Addresses() => NetworkInterface.GetAllNetworkInterfaces()
@@ -56,8 +58,9 @@ public sealed partial class TimingHub : IAsyncDisposable
             simulation = Simulation, lastError = LastError,
             visionDiagnostics=visionDiagnostics.Values.Where(d=>deviceId==null||Engine.GetHeat(d.HeatId).DeviceId==deviceId).ToArray(),
             activeRun = Engine.Runs.LastOrDefault(r => deviceId == null || r.DeviceId == deviceId),
-            protocol = 3, visionModel = RaceEngine.VisionModelVersion, rigFingerprint = Engine.RigFingerprint,
+            protocol = Wire.Protocol, appVersion=Wire.AppVersion, visionModel = RaceEngine.VisionModelVersion, rigFingerprint = Engine.RigFingerprint,
             validationProfiles = Engine.ValidationProfiles.Select(p=>new{p.Id,p.CaptureFingerprint,p.ClockSource,p.Passes,count=p.Measurements.Count,p.BiasUs,p.P95AbsoluteUs,p.MaxAbsoluteUs}).ToArray(),
+            recordingStopRequests=Engine.Heats.Where(h=>h.StopRecordingRequested&&!h.RecordingSaveConfirmed&&(deviceId==null||h.DeviceId==deviceId)).Select(h=>new{heatId=h.Id,recordingId=h.RecordingId}).ToArray(),
             currentHeat = HeatView(Engine.ActiveHeat is { } activeHeat && (deviceId == null || activeHeat.DeviceId == deviceId) ? activeHeat : Engine.Heats.LastOrDefault(h => deviceId == null || h.DeviceId == deviceId)),
             heats = deviceId == null ? Engine.Heats.ToArray() : [],
             runs = deviceId == null ? Engine.Runs.ToArray() : [],
@@ -158,7 +161,7 @@ public sealed partial class TimingHub : IAsyncDisposable
                 await ctx.Response.WriteAsJsonAsync(new { error = "操作未保存：" + ex.Message }, Wire.Json);
             }
         });
-        server.MapGet("/api/health", () => new { name = "ObstacleTimer", protocol = 3, sessionId = Engine.SessionId });
+        server.MapGet("/api/health", () => new { name = "ObstacleTimer", protocol = Wire.Protocol, appVersion=Wire.AppVersion, sessionId = Engine.SessionId });
         server.MapGet("/", () => Results.Redirect("/setup"));
         server.MapGet("/favicon.ico", () => Results.NoContent());
         server.MapGet("/setup", (HttpContext c) => Results.Content(LocalCertificates.SetupHtml(c.Request.Host.Host, HttpsPort), "text/html; charset=utf-8"));
@@ -177,7 +180,7 @@ public sealed partial class TimingHub : IAsyncDisposable
             }
             string access = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
             tokens[access] = p.DeviceId;
-            await ctx.Response.WriteAsJsonAsync(new { token = access, sessionId = Engine.SessionId, protocol = 3 }, Wire.Json);
+            await ctx.Response.WriteAsJsonAsync(new { token = access, sessionId = Engine.SessionId, protocol = Wire.Protocol, appVersion=Wire.AppVersion }, Wire.Json);
         });
         server.MapGet("/api/state", (HttpContext c) => Results.Json(Snapshot(Device(c)), Wire.Json));
         server.MapMethods("/api/ws", ["GET", "CONNECT"], ServeSocket);
@@ -433,11 +436,11 @@ public sealed partial class TimingHub : IAsyncDisposable
         static string Cell(string? s) => "\"" + (s ?? "").Replace("\"", "\"\"") + "\"";
         lock (gate)
         {
-            var rows = new List<string> { "组次,组内名次,场次,号码,姓名,队伍,状态,原始微秒,显示秒,精度微秒,舍入,版本,计时质量,终点事件,判读版本,备注,视频事件,视频候选微秒,备份微秒,视频减备份微秒,采用来源,视频核验状态,验证配置" };
+            var rows = new List<string> { "组次,组内名次,场次,号码,姓名,队伍,状态,原始微秒,显示秒,精度微秒,舍入,版本,计时质量,终点事件,判读版本,备注,视频事件,视频候选微秒,备份微秒,视频减备份微秒,采用来源,视频核验状态,验证配置,候选来源,原片帧微秒,文件核验状态" };
             foreach (var r in Engine.Runs)
                 rows.Add(string.Join(',', new[] { Cell(r.HeatId == null ? "旧版记录" : Engine.GetHeat(r.HeatId).Name), RaceEngine.RankOf(r, Engine.Runs.Where(member => member.HeatId == r.HeatId))?.ToString() ?? "", Cell(r.Id), Cell(r.Athlete.Bib), Cell(r.Athlete.Name), Cell(r.Athlete.Team), Cell(r.State.ToString()),
                     r.ElapsedUs?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "", r.ElapsedUs.HasValue ? r.Profile?.Format(r.ElapsedUs.Value) ?? (r.ElapsedUs.Value / 1_000_000d).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) : "",
-                    r.Profile?.UnitUs.ToString() ?? "", r.Profile?.Rounding.ToString() ?? "", r.Revision.ToString(), Cell(r.Quality), Cell(r.FinishEventId), r.Reviews.Count.ToString(), Cell(r.Revisions.LastOrDefault()?.Note), Cell(r.VisionEventId), Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.EstimatedElapsedUs?.ToString()??"", r.BackupElapsedUs?.ToString()??"", (Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.EstimatedElapsedUs-r.BackupElapsedUs)?.ToString()??"",Cell(r.OfficialSource),Cell(r.VisionStatus),Cell(Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.ValidationId) }));
+                    r.Profile?.UnitUs.ToString() ?? "", r.Profile?.Rounding.ToString() ?? "", r.Revision.ToString(), Cell(r.Quality), Cell(r.FinishEventId), r.Reviews.Count.ToString(), Cell(r.Revisions.LastOrDefault()?.Note), Cell(r.VisionEventId), Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.EstimatedElapsedUs?.ToString()??"", r.BackupElapsedUs?.ToString()??"", (Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.EstimatedElapsedUs-r.BackupElapsedUs)?.ToString()??"",Cell(r.OfficialSource),Cell(r.VisionStatus),Cell(Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.ValidationId),Cell(Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.Submission.Origin),Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.Submission.OriginalFramePtsUs?.ToString()??"",Cell(Engine.VisionEvents.FirstOrDefault(v=>v.Id==r.VisionEventId)?.FileVerificationState) }));
             File.WriteAllLines(path, rows, new UTF8Encoding(true));
         }
     }
